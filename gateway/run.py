@@ -15,6 +15,7 @@ Usage:
 
 import asyncio
 import dataclasses
+import importlib.metadata
 import json
 import logging
 import os
@@ -474,6 +475,29 @@ from gateway.restart import (
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     parse_restart_drain_timeout,
 )
+
+_BUILTIN_ADAPTER_PLATFORMS = {
+    Platform.TELEGRAM,
+    Platform.DISCORD,
+    Platform.WHATSAPP,
+    Platform.SLACK,
+    Platform.SIGNAL,
+    Platform.HOMEASSISTANT,
+    Platform.EMAIL,
+    Platform.SMS,
+    Platform.DINGTALK,
+    Platform.FEISHU,
+    Platform.WECOM_CALLBACK,
+    Platform.WECOM,
+    Platform.WEIXIN,
+    Platform.MATTERMOST,
+    Platform.MATRIX,
+    Platform.API_SERVER,
+    Platform.WEBHOOK,
+    Platform.BLUEBUBBLES,
+    Platform.QQBOT,
+    Platform.YUANBAO,
+}
 
 
 from gateway.whatsapp_identity import (
@@ -2416,6 +2440,7 @@ class GatewayRunner:
         # Warn if no user allowlists are configured and open access is not opted in
         _builtin_allowed_vars = (
             "TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
+            "TELEGRAM_USERBOT_ALLOWED_USERS",
             "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
             "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
             "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -2434,6 +2459,7 @@ class GatewayRunner:
         )
         _builtin_allow_all_vars = (
             "TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
+            "TELEGRAM_USERBOT_ALLOW_ALL_USERS",
             "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
             "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
             "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
@@ -3726,8 +3752,10 @@ class GatewayRunner:
     ) -> Optional[BasePlatformAdapter]:
         """Create the appropriate adapter for a platform.
 
-        Checks the platform_registry first (plugin adapters), then falls
-        through to the built-in if/elif chain for core platforms.
+        Core platforms must resolve through the built-in if/elif chain so
+        plugin registry or entry-point adapters cannot shadow bundled
+        adapters. External platforms, including telegram_userbot, may be
+        supplied by the registry or entry points.
         """
         if hasattr(config, "extra") and isinstance(config.extra, dict):
             config.extra.setdefault(
@@ -3739,23 +3767,76 @@ class GatewayRunner:
                 getattr(self.config, "thread_sessions_per_user", False),
             )
 
-        # ── Plugin-registered platforms (checked first) ───────────────────
-        try:
-            from gateway.platform_registry import platform_registry
-            if platform_registry.is_registered(platform.value):
-                adapter = platform_registry.create_adapter(platform.value, config)
+        # ── External registry / entry-point platforms ─────────────────────
+        # External adapters include special platforms such as telegram_userbot
+        # and dynamic plugin platforms. They must not shadow core adapters
+        # like telegram/discord/slack.
+        _external_adapter_platforms = {Platform.TELEGRAM_USERBOT}
+        _allow_external_adapter = (
+            platform in _external_adapter_platforms
+            or platform not in _BUILTIN_ADAPTER_PLATFORMS
+        )
+        if _allow_external_adapter:
+            try:
+                from gateway.platform_registry import platform_registry
+                if platform_registry.is_registered(platform.value):
+                    adapter = platform_registry.create_adapter(platform.value, config)
+                    if adapter is not None:
+                        return adapter
+                    # Registered but failed to instantiate — don't silently fall
+                    # through to built-ins (there are none for plugin platforms).
+                    logger.error(
+                        "Platform '%s' is registered but adapter creation failed "
+                        "(check dependencies and config)",
+                        platform.value,
+                    )
+                    return None
+            except Exception as e:
+                logger.debug("Platform registry lookup for '%s' failed: %s", platform.value, e)
+
+        if _allow_external_adapter:
+            try:
+                eps = importlib.metadata.entry_points()
+                if hasattr(eps, "select"):
+                    adapter_eps = list(eps.select(group="hermes_agent.gateway_adapters"))
+                elif isinstance(eps, dict):
+                    adapter_eps = list(eps.get("hermes_agent.gateway_adapters", []))
+                else:
+                    adapter_eps = [
+                        ep for ep in eps
+                        if ep.group == "hermes_agent.gateway_adapters"
+                    ]
+            except Exception as e:
+                logger.debug("Third-party adapter entry-point lookup failed: %s", e)
+                adapter_eps = []
+
+            for ep in adapter_eps:
+                try:
+                    ep_name = ep.name
+                except Exception as e:
+                    logger.debug("Skipping unreadable third-party adapter entry point: %s", e)
+                    continue
+                if ep_name != platform.value:
+                    continue
+                try:
+                    factory = ep.load()
+                    adapter = factory(config)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to create third-party adapter for platform '%s': %s",
+                        platform.value,
+                        e,
+                        exc_info=True,
+                    )
+                    return None
                 if adapter is not None:
                     return adapter
-                # Registered but failed to instantiate — don't silently fall
-                # through to built-ins (there are none for plugin platforms).
                 logger.error(
-                    "Platform '%s' is registered but adapter creation failed "
-                    "(check dependencies and config)",
+                    "Third-party platform adapter '%s' returned None",
                     platform.value,
                 )
                 return None
-        except Exception as e:
-            logger.debug("Platform registry lookup for '%s' failed: %s", platform.value, e)
+
         # Fall through to built-in adapters below
 
         if platform == Platform.TELEGRAM:
@@ -3929,6 +4010,7 @@ class GatewayRunner:
 
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+            Platform.TELEGRAM_USERBOT: "TELEGRAM_USERBOT_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
@@ -3955,6 +4037,7 @@ class GatewayRunner:
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
+            Platform.TELEGRAM_USERBOT: "TELEGRAM_USERBOT_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
@@ -4141,6 +4224,7 @@ class GatewayRunner:
         if platform:
             platform_env_map = {
                 Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+                Platform.TELEGRAM_USERBOT: "TELEGRAM_USERBOT_ALLOWED_USERS",
                 Platform.DISCORD:  "DISCORD_ALLOWED_USERS",
                 Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
                 Platform.SLACK:    "SLACK_ALLOWED_USERS",
@@ -4175,6 +4259,65 @@ class GatewayRunner:
 
         return "pair"
 
+    @staticmethod
+    def _telegram_userbot_runtime_guard():
+        from telegram_userbot.hermes_gateway.plugin import pre_gateway_dispatch
+
+        return pre_gateway_dispatch
+
+    def _telegram_userbot_slash_guard_allows(self, event: MessageEvent) -> bool:
+        try:
+            guard = self._telegram_userbot_runtime_guard()
+        except Exception as exc:
+            logger.warning("telegram_userbot runtime guard unavailable: %s", exc)
+            return False
+
+        try:
+            result = guard(
+                event=event,
+                gateway=self,
+                session_store=getattr(self, "session_store", None),
+            )
+        except Exception as exc:
+            logger.warning("telegram_userbot runtime guard failed: %s", exc)
+            return False
+
+        if not isinstance(result, dict):
+            return False
+        return str(result.get("action", "")).strip().lower() == "allow"
+
+    def _telegram_userbot_slash_block_response(
+        self,
+        event: MessageEvent,
+        *,
+        is_internal: bool = False,
+    ) -> Optional[str]:
+        """Return a block message when a telegram_userbot slash is not runtime-allowed.
+
+        The runtime guard is only a slash-command gate for external userbot
+        participants.  Passing it does not authorize the sender for Hermes;
+        the normal allowlist/pairing checks still run afterward.
+        """
+        source = event.source
+        if (
+            is_internal
+            or not source
+            or source.platform != Platform.TELEGRAM_USERBOT
+            or not event.get_command()
+        ):
+            return None
+
+        if self._telegram_userbot_slash_guard_allows(event):
+            return None
+
+        _blocked_key = self._session_key_for_source(source)
+        logger.info(
+            "Blocked slash command /%s from telegram_userbot session %s",
+            event.get_command(),
+            _blocked_key,
+        )
+        return "Slash commands are disabled for Telegram userbot conversations. Send plain text instead."
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -4193,6 +4336,27 @@ class GatewayRunner:
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
+        _checked_userbot_slash_texts: set[str] = set()
+
+        def _telegram_userbot_slash_checkpoint() -> Optional[str]:
+            marker = event.text or ""
+            if marker in _checked_userbot_slash_texts:
+                return None
+            response = self._telegram_userbot_slash_block_response(
+                event,
+                is_internal=is_internal,
+            )
+            if response is None and event.get_command():
+                _checked_userbot_slash_texts.add(marker)
+            return response
+
+        # Telegram userbot messages originate from a user account context and
+        # may come from external Telegram participants.  Slash commands are
+        # gated before generic plugin hooks so non-admin participants cannot
+        # reach global/plugin/quick command dispatch.
+        _blocked_userbot_slash = _telegram_userbot_slash_checkpoint()
+        if _blocked_userbot_slash is not None:
+            return _blocked_userbot_slash
 
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
@@ -4234,6 +4398,13 @@ class GatewayRunner:
                     break
                 if _action == "allow":
                     break
+
+        # pre_gateway_dispatch can rewrite plain text into a slash command.
+        # Re-run the telegram_userbot gate before auth/dispatch so external
+        # participants cannot obtain slash access through a plugin rewrite.
+        _blocked_userbot_slash = _telegram_userbot_slash_checkpoint()
+        if _blocked_userbot_slash is not None:
+            return _blocked_userbot_slash
 
         if is_internal:
             pass
@@ -4818,6 +4989,12 @@ class GatewayRunner:
                     canonical = _cmd_def.name if _cmd_def else command
                     break
 
+        # command:<name> hooks may rewrite one slash command to another.
+        # Re-check before built-in/plugin/quick dispatch observes the rewrite.
+        _blocked_userbot_slash = _telegram_userbot_slash_checkpoint()
+        if _blocked_userbot_slash is not None:
+            return _blocked_userbot_slash
+
         if canonical == "new":
             return await self._handle_reset_command(event)
         
@@ -4955,12 +5132,36 @@ class GatewayRunner:
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            _proc_kwargs = {}
+                            if os.name != "nt":
+                                _proc_kwargs["start_new_session"] = True
                             proc = await asyncio.create_subprocess_shell(
                                 exec_cmd,
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.PIPE,
+                                **_proc_kwargs,
                             )
-                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                            communicate = proc.communicate()
+                            try:
+                                stdout, stderr = await asyncio.wait_for(
+                                    communicate,
+                                    timeout=30,
+                                )
+                            except asyncio.TimeoutError:
+                                if hasattr(communicate, "close"):
+                                    communicate.close()
+                                try:
+                                    if os.name != "nt":
+                                        os.killpg(proc.pid, signal.SIGKILL)
+                                    else:
+                                        proc.kill()
+                                except ProcessLookupError:
+                                    pass
+                                try:
+                                    await proc.wait()
+                                except Exception:
+                                    pass
+                                return "Quick command timed out (30s)."
                             output = (stdout or stderr).decode().strip()
                             return output if output else "Command returned no output."
                         except asyncio.TimeoutError:
@@ -4977,6 +5178,9 @@ class GatewayRunner:
                         user_args = event.get_command_args().strip()
                         event.text = f"{target} {user_args}".strip()
                         command = target_command
+                        _blocked_userbot_slash = _telegram_userbot_slash_checkpoint()
+                        if _blocked_userbot_slash is not None:
+                            return _blocked_userbot_slash
                         # Fall through to normal command dispatch below
                     else:
                         return f"Quick command '/{command}' has no target defined."

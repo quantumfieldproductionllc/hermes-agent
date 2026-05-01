@@ -191,6 +191,25 @@ class TestSendWithRetryNetworkRetry:
         assert len(adapter._send_calls) == 2
 
     @pytest.mark.asyncio
+    async def test_retry_after_seconds_raw_response_sets_delay(self):
+        """Adapters can pass platform flood-wait timing through raw_response."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(
+                success=False,
+                error="rate limited",
+                retryable=True,
+                raw_response={"retry_after_seconds": 7},
+            ),
+            SendResult(success=True, message_id="ok"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+
+        assert result.success
+        mock_sleep.assert_awaited_once_with(7.0)
+
+    @pytest.mark.asyncio
     async def test_network_to_nonnetwork_transition_falls_back_to_plaintext(self):
         """If error switches from network to formatting mid-retry, fall through to plain-text fallback."""
         adapter = _StubAdapter()

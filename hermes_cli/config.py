@@ -1282,6 +1282,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
+    23: ["TELEGRAM_USERBOT_ALLOWED_USERS", "TELEGRAM_USERBOT_ALLOW_ALL_USERS"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -1946,6 +1947,21 @@ OPTIONAL_ENV_VARS = {
         "url": "https://t.me/userinfobot",
         "password": False,
         "category": "messaging",
+    },
+    "TELEGRAM_USERBOT_ALLOWED_USERS": {
+        "description": "Comma-separated Telegram user IDs allowed to use the Telegram userbot",
+        "prompt": "Allowed Telegram userbot user IDs (comma-separated)",
+        "url": "https://t.me/userinfobot",
+        "password": False,
+        "category": "messaging",
+    },
+    "TELEGRAM_USERBOT_ALLOW_ALL_USERS": {
+        "description": "Allow all users to interact with the Telegram userbot (true/false). Default: false.",
+        "prompt": "Allow all Telegram userbot users (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
     },
     "TELEGRAM_PROXY": {
         "description": "Proxy URL for Telegram connections (overrides HTTPS_PROXY). Supports http://, https://, socks5://",

@@ -4,10 +4,10 @@ Platform Adapter Registry
 Allows platform adapters (built-in and plugin) to self-register so the gateway
 can discover and instantiate them without hardcoded if/elif chains.
 
-Built-in adapters continue to use the existing if/elif in _create_adapter()
-for now.  Plugin adapters register here via PluginContext.register_platform()
-and are looked up first -- if nothing is found the gateway falls through to
-the legacy code path.
+Built-in adapters continue to use the existing if/elif in _create_adapter().
+Plugin adapters register here via PluginContext.register_platform() and are
+used only for external platforms, so registry entries cannot shadow core
+adapters such as telegram or discord.
 
 Usage (plugin side):
 
@@ -124,8 +124,9 @@ class PlatformRegistry:
     def register(self, entry: PlatformEntry) -> None:
         """Register a platform adapter entry.
 
-        If an entry with the same name exists, it is replaced (last writer
-        wins -- this lets plugins override built-in adapters if desired).
+        If an entry with the same name exists, it is replaced within the
+        registry.  GatewayRunner still refuses to let plugin entries shadow
+        built-in adapters.
         """
         if entry.name in self._entries:
             prev = self._entries[entry.name]

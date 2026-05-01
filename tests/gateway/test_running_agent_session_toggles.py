@@ -30,9 +30,9 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
-def _make_source() -> SessionSource:
+def _make_source(platform: Platform = Platform.TELEGRAM) -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=platform,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
@@ -40,8 +40,8 @@ def _make_source() -> SessionSource:
     )
 
 
-def _make_event(text: str) -> MessageEvent:
-    return MessageEvent(text=text, source=_make_source(), message_id="m1")
+def _make_event(text: str, platform: Platform = Platform.TELEGRAM) -> MessageEvent:
+    return MessageEvent(text=text, source=_make_source(platform), message_id="m1")
 
 
 def _make_runner():
@@ -107,6 +107,78 @@ def _make_runner():
     runner._running_agents[sk] = agent_mock
     runner._running_agents_ts[sk] = time.time()
     return runner
+
+
+@pytest.mark.asyncio
+async def test_telegram_userbot_external_slash_blocked_before_gateway_dispatch(monkeypatch):
+    """telegram_userbot external slash commands must not reach generic plugin hooks."""
+    runner = _make_runner()
+    runner._handle_restart_command = AsyncMock(
+        side_effect=AssertionError("/restart must not dispatch for telegram_userbot")
+    )
+
+    def runtime_guard(*, event, gateway, session_store):
+        return {"action": "skip", "reason": "external_participant_command_blocked"}
+
+    def fail_invoke_hook(*_args, **_kwargs):
+        raise AssertionError("pre_gateway_dispatch must not run for blocked telegram_userbot slash commands")
+
+    monkeypatch.setattr(runner, "_telegram_userbot_runtime_guard", lambda: runtime_guard)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fail_invoke_hook)
+
+    result = await runner._handle_message(
+        _make_event("/restart", platform=Platform.TELEGRAM_USERBOT)
+    )
+
+    runner._handle_restart_command.assert_not_awaited()
+    assert result is not None
+    assert "Slash commands are disabled" in result
+
+
+@pytest.mark.asyncio
+async def test_telegram_userbot_admin_slash_allowed_to_normal_dispatch(monkeypatch):
+    """A runtime-allowed operator admin peer may use normal harmless slash dispatch."""
+    runner = _make_runner()
+    runner._handle_status_command = AsyncMock(return_value="status ok")
+
+    def runtime_guard(*, event, gateway, session_store):
+        return {"action": "allow"}
+
+    monkeypatch.setattr(runner, "_telegram_userbot_runtime_guard", lambda: runtime_guard)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+
+    result = await runner._handle_message(
+        _make_event("/status", platform=Platform.TELEGRAM_USERBOT)
+    )
+
+    runner._handle_status_command.assert_awaited_once()
+    assert result == "status ok"
+
+
+@pytest.mark.asyncio
+async def test_telegram_userbot_slash_blocks_when_runtime_guard_unavailable(monkeypatch):
+    """Fail closed when the telegram_userbot runtime guard cannot be loaded."""
+    runner = _make_runner()
+    runner._handle_status_command = AsyncMock(
+        side_effect=AssertionError("/status must not dispatch without runtime guard")
+    )
+
+    def missing_runtime_guard():
+        raise ImportError("telegram_userbot runtime not installed")
+
+    def fail_invoke_hook(*_args, **_kwargs):
+        raise AssertionError("pre_gateway_dispatch must not run when runtime guard is unavailable")
+
+    monkeypatch.setattr(runner, "_telegram_userbot_runtime_guard", missing_runtime_guard)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fail_invoke_hook)
+
+    result = await runner._handle_message(
+        _make_event("/status", platform=Platform.TELEGRAM_USERBOT)
+    )
+
+    runner._handle_status_command.assert_not_awaited()
+    assert result is not None
+    assert "Slash commands are disabled" in result
 
 
 @pytest.mark.asyncio

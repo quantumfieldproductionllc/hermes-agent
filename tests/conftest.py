@@ -202,6 +202,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # (user shell, earlier leaky test, CI env), they change gateway auth
     # behavior and flake button-authorization tests.
     "TELEGRAM_ALLOWED_USERS",
+    "TELEGRAM_USERBOT_ALLOWED_USERS",
     "DISCORD_ALLOWED_USERS",
     "WHATSAPP_ALLOWED_USERS",
     "SLACK_ALLOWED_USERS",
@@ -217,6 +218,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "GATEWAY_ALLOWED_USERS",
     "GATEWAY_ALLOW_ALL_USERS",
     "TELEGRAM_ALLOW_ALL_USERS",
+    "TELEGRAM_USERBOT_ALLOW_ALL_USERS",
     "DISCORD_ALLOW_ALL_USERS",
     "WHATSAPP_ALLOW_ALL_USERS",
     "SLACK_ALLOW_ALL_USERS",

@@ -298,6 +298,15 @@ class TestSanitizeEnvLines:
             "GITHUB_TOKEN=333\n",
         ]
 
+    def test_splits_telegram_userbot_auth_keys(self):
+        """Telegram userbot auth vars are known to the env sanitizer."""
+        lines = ["TELEGRAM_USERBOT_ALLOWED_USERS=123TELEGRAM_USERBOT_ALLOW_ALL_USERS=true\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == [
+            "TELEGRAM_USERBOT_ALLOWED_USERS=123\n",
+            "TELEGRAM_USERBOT_ALLOW_ALL_USERS=true\n",
+        ]
+
     def test_value_with_equals_sign_not_split(self):
         """A value containing '=' shouldn't be falsely split (lowercase in value)."""
         lines = ["OPENAI_BASE_URL=https://api.example.com/v1?key=abc123\n"]
@@ -409,6 +418,24 @@ class TestOptionalEnvVarsRegistry:
         for vars_list in ENV_VARS_BY_VERSION.values():
             all_vars.extend(vars_list)
         assert "TAVILY_API_KEY" in all_vars
+
+    def test_telegram_userbot_auth_vars_registered(self):
+        """Telegram userbot auth env vars are visible to env management."""
+        from hermes_cli.config import ENV_VARS_BY_VERSION, OPTIONAL_ENV_VARS
+
+        for name in (
+            "TELEGRAM_USERBOT_ALLOWED_USERS",
+            "TELEGRAM_USERBOT_ALLOW_ALL_USERS",
+        ):
+            assert name in OPTIONAL_ENV_VARS
+            assert OPTIONAL_ENV_VARS[name]["category"] == "messaging"
+            assert OPTIONAL_ENV_VARS[name]["password"] is False
+
+        all_vars = []
+        for vars_list in ENV_VARS_BY_VERSION.values():
+            all_vars.extend(vars_list)
+        assert "TELEGRAM_USERBOT_ALLOWED_USERS" in all_vars
+        assert "TELEGRAM_USERBOT_ALLOW_ALL_USERS" in all_vars
 
 
 class TestAnthropicTokenMigration:

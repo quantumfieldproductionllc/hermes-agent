@@ -78,7 +78,7 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "telegram_userbot_admin"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -90,7 +90,10 @@ _DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "di
 _TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
     "discord": {"discord"},
     "discord_admin": {"discord"},
+    "telegram_userbot_admin": {"cli"},
 }
+
+_RESTRICTED_PLATFORM_DEFAULTS = {"telegram_userbot"}
 
 
 def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
@@ -100,6 +103,27 @@ def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
     """
     allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
     return allowed is None or platform in allowed
+
+
+def _toolset_allowed_by_restricted_default(ts_key: str, platform: str) -> bool:
+    """Return True if a restricted platform may resolve ``ts_key``.
+
+    Restricted external platforms only expose toolsets whose tools are already
+    present in their platform default toolset. This prevents broad configured
+    toolsets (terminal, messaging, admin, plugins, MCP) from escaping the
+    platform boundary.
+    """
+    if platform not in _RESTRICTED_PLATFORM_DEFAULTS:
+        return True
+    try:
+        from toolsets import resolve_toolset
+        plat_info = PLATFORMS.get(platform)
+        default_ts = plat_info["default_toolset"] if plat_info else f"hermes-{platform}"
+        allowed_tools = set(resolve_toolset(default_ts))
+        ts_tools = set(resolve_toolset(ts_key))
+    except Exception:
+        return False
+    return bool(ts_tools) and ts_tools.issubset(allowed_tools)
 
 
 def _get_effective_configurable_toolsets():
@@ -837,12 +861,19 @@ def _get_platform_tools(
     # This avoids the subset-inference bug where composite toolsets like
     # "hermes-cli" (which include all _HERMES_CORE_TOOLS) cause disabled
     # toolsets to re-appear as enabled.
-    has_explicit_config = any(ts in configurable_keys for ts in toolset_names)
+    has_explicit_config = any(
+        ts in configurable_keys and _toolset_allowed_by_restricted_default(ts, platform)
+        for ts in toolset_names
+    )
 
     if has_explicit_config:
         enabled_toolsets = {
             ts for ts in toolset_names
-            if ts in configurable_keys and _toolset_allowed_for_platform(ts, platform)
+            if (
+                ts in configurable_keys
+                and _toolset_allowed_for_platform(ts, platform)
+                and _toolset_allowed_by_restricted_default(ts, platform)
+            )
         }
     else:
         # No explicit config — fall back to resolving composite toolset names
@@ -854,6 +885,8 @@ def _get_platform_tools(
         enabled_toolsets = set()
         for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
             if not _toolset_allowed_for_platform(ts_key, platform):
+                continue
+            if not _toolset_allowed_by_restricted_default(ts_key, platform):
                 continue
             ts_tools = set(resolve_toolset(ts_key))
             if ts_tools and ts_tools.issubset(all_tool_names):
@@ -917,7 +950,7 @@ def _get_platform_tools(
     # A plugin toolset is "known" for a platform once `hermes tools`
     # has been saved for that platform (tracked via known_plugin_toolsets).
     # Unknown plugins default to enabled; known-but-absent = disabled.
-    if plugin_ts_keys:
+    if plugin_ts_keys and platform not in _RESTRICTED_PLATFORM_DEFAULTS:
         known_map = config.get("known_plugin_toolsets", {})
         known_for_platform = set(known_map.get(platform, []))
         for pts in plugin_ts_keys:
@@ -941,6 +974,8 @@ def _get_platform_tools(
         and ts not in plugin_ts_keys
         and ts not in platform_default_keys
     }
+    if platform in _RESTRICTED_PLATFORM_DEFAULTS:
+        explicit_passthrough = set()
 
     # MCP servers are expected to be available on all platforms by default.
     # If the platform explicitly lists one or more MCP server names, treat that
@@ -960,7 +995,9 @@ def _get_platform_tools(
     else:
         explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
         enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
-    if include_default_mcp_servers:
+    if platform in _RESTRICTED_PLATFORM_DEFAULTS:
+        pass
+    elif include_default_mcp_servers:
         if explicit_mcp_servers or "no_mcp" in toolset_names:
             enabled_toolsets.update(explicit_mcp_servers)
         else:
@@ -994,7 +1031,10 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     # from turning on, say, the `discord` toolset for Telegram.
     enabled_toolset_keys = {
         ts for ts in enabled_toolset_keys
-        if _toolset_allowed_for_platform(ts, platform)
+        if (
+            _toolset_allowed_for_platform(ts, platform)
+            and _toolset_allowed_by_restricted_default(ts, platform)
+        )
     }
 
     # Get the set of all configurable toolset keys (built-in + plugin)
@@ -1019,6 +1059,8 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         entry for entry in existing_toolsets
         if entry not in configurable_keys and entry not in platform_default_keys
     }
+    if platform in _RESTRICTED_PLATFORM_DEFAULTS:
+        preserved_entries = set()
     # Opening `hermes tools` is the user's opt-in to reconfigure tools, so treat
     # saving from the picker as consent to clear the "no_mcp" sentinel. The
     # picker has no checkbox for no_mcp, so without this users who once set it
@@ -1143,7 +1185,10 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: 
     # Drop platform-scoped toolsets that don't apply to this platform.
     effective = [
         (k, l, d) for (k, l, d) in effective_all
-        if _toolset_allowed_for_platform(k, platform)
+        if (
+            _toolset_allowed_for_platform(k, platform)
+            and _toolset_allowed_by_restricted_default(k, platform)
+        )
     ]
 
     labels = []
@@ -2202,7 +2247,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         current_enabled = _get_platform_tools(config, pkey, include_default_mcp_servers=False)
 
         # Show checklist
-        new_enabled = _prompt_toolset_checklist(pinfo["label"], current_enabled)
+        new_enabled = _prompt_toolset_checklist(pinfo["label"], current_enabled, platform=pkey)
 
         if new_enabled != current_enabled:
             added = new_enabled - current_enabled
@@ -2417,7 +2462,10 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
     effective_all = _get_effective_configurable_toolsets()
     effective = [
         (k, l, d) for (k, l, d) in effective_all
-        if _toolset_allowed_for_platform(k, platform)
+        if (
+            _toolset_allowed_for_platform(k, platform)
+            and _toolset_allowed_by_restricted_default(k, platform)
+        )
     ]
     builtin_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
@@ -2484,18 +2532,26 @@ def tools_disable_enable_command(args):
             _print_error(f"Unknown toolset '{name}'")
         toolset_targets = [t for t in toolset_targets if t in valid_toolsets]
 
-    # Reject platform-scoped toolsets on platforms that don't allow them.
+    # Reject platform-scoped or restricted-default toolsets that do not apply.
     restricted_targets = [
         t for t in toolset_targets
-        if not _toolset_allowed_for_platform(t, platform)
+        if (
+            not _toolset_allowed_for_platform(t, platform)
+            or not _toolset_allowed_by_restricted_default(t, platform)
+        )
     ]
     if restricted_targets:
         for name in restricted_targets:
             allowed = sorted(_TOOLSET_PLATFORM_RESTRICTIONS.get(name) or set())
-            _print_error(
-                f"Toolset '{name}' is not available on platform '{platform}' "
-                f"(only: {', '.join(allowed)})"
-            )
+            if allowed:
+                _print_error(
+                    f"Toolset '{name}' is not available on platform '{platform}' "
+                    f"(only: {', '.join(allowed)})"
+                )
+            else:
+                _print_error(
+                    f"Toolset '{name}' is not available on restricted platform '{platform}'"
+                )
         toolset_targets = [t for t in toolset_targets if t not in restricted_targets]
 
     if toolset_targets:

@@ -121,6 +121,18 @@ class TestGetConnectedPlatforms:
         )
         assert Platform.DINGTALK not in config.get_connected_platforms()
 
+    def test_telegram_userbot_connected_with_runtime_config_path(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM_USERBOT: PlatformConfig(
+                    enabled=True,
+                    extra={"runtime_config_path": "/tmp/userbot.toml"},
+                ),
+            },
+        )
+
+        assert Platform.TELEGRAM_USERBOT in config.get_connected_platforms()
+
 
 class TestSessionResetPolicy:
     def test_roundtrip(self):
@@ -212,6 +224,25 @@ class TestGatewayConfigRoundtrip:
     def test_from_dict_coerces_quoted_false_always_log_local(self):
         restored = GatewayConfig.from_dict({"always_log_local": "false"})
         assert restored.always_log_local is False
+
+    def test_telegram_userbot_platform_is_preserved(self):
+        restored = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "telegram_userbot": {
+                        "enabled": True,
+                        "extra": {"runtime_config_path": "/tmp/userbot.toml"},
+                    }
+                }
+            }
+        )
+
+        assert Platform("telegram_userbot") is Platform.TELEGRAM_USERBOT
+        assert Platform.TELEGRAM_USERBOT in restored.platforms
+        assert (
+            restored.platforms[Platform.TELEGRAM_USERBOT].extra["runtime_config_path"]
+            == "/tmp/userbot.toml"
+        )
 
 
 class TestLoadGatewayConfig:

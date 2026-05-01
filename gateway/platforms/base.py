@@ -2187,6 +2187,18 @@ class BasePlatformAdapter(ABC):
         know to retry rather than waiting indefinitely.
         """
 
+        def _retry_after_seconds(send_result: "SendResult") -> float | None:
+            raw = getattr(send_result, "raw_response", None)
+            if not isinstance(raw, dict):
+                return None
+            value = raw.get("retry_after_seconds")
+            if value is None:
+                return None
+            try:
+                return max(float(value), 0.0)
+            except (TypeError, ValueError):
+                return None
+
         result = await self.send(
             chat_id=chat_id,
             content=content,
@@ -2208,7 +2220,12 @@ class BasePlatformAdapter(ABC):
         if is_network:
             # Retry with exponential backoff for transient errors
             for attempt in range(1, max_retries + 1):
-                delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                retry_after = _retry_after_seconds(result)
+                delay = (
+                    retry_after
+                    if retry_after is not None
+                    else base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                )
                 logger.warning(
                     "[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s",
                     self.name, attempt, max_retries, delay, error_str,

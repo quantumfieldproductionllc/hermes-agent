@@ -215,6 +215,24 @@ class TestToolsetConsistency:
         # silently let a platform diverge so far that nothing is shared).
         assert len(core) > 20, f"Suspiciously small shared core: {len(core)} tools"
 
+    def test_telegram_userbot_toolset_is_restricted(self):
+        tools = set(resolve_toolset("hermes-telegram-userbot"))
+
+        assert "telegram_userbot_approve_peer" not in tools
+        assert "telegram_userbot_revoke_peer" not in tools
+        assert "terminal" not in tools
+        assert "send_message" not in tools
+        assert "todo" not in tools
+        assert "memory" not in tools
+        assert "session_search" not in tools
+        assert tools == {
+            "web_search",
+            "web_extract",
+            "vision_analyze",
+            "clarify",
+        }
+        assert "clarify" in tools
+
 
 class TestPluginToolsets:
     def test_get_all_toolsets_includes_plugin_toolset(self, monkeypatch):

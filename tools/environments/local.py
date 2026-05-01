@@ -67,6 +67,8 @@ def _build_provider_env_blocklist() -> frozenset:
         "FIRECRAWL_API_URL",
         "TELEGRAM_HOME_CHANNEL",
         "TELEGRAM_HOME_CHANNEL_NAME",
+        "TELEGRAM_USERBOT_ALLOWED_USERS",
+        "TELEGRAM_USERBOT_ALLOW_ALL_USERS",
         "DISCORD_HOME_CHANNEL",
         "DISCORD_HOME_CHANNEL_NAME",
         "DISCORD_REQUIRE_MENTION",

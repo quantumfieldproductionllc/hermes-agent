@@ -116,6 +116,8 @@ class TestProviderEnvBlocklist:
         leaked_vars = {
             "TELEGRAM_BOT_TOKEN": "bot-token",
             "TELEGRAM_HOME_CHANNEL": "12345",
+            "TELEGRAM_USERBOT_ALLOWED_USERS": "12345",
+            "TELEGRAM_USERBOT_ALLOW_ALL_USERS": "true",
             "DISCORD_HOME_CHANNEL": "67890",
             "SLACK_APP_TOKEN": "xapp-secret",
             "WHATSAPP_ALLOWED_USERS": "+15555550123",
@@ -257,6 +259,8 @@ class TestBlocklistCoverage:
         extras = {
             "TELEGRAM_HOME_CHANNEL",
             "TELEGRAM_HOME_CHANNEL_NAME",
+            "TELEGRAM_USERBOT_ALLOWED_USERS",
+            "TELEGRAM_USERBOT_ALLOW_ALL_USERS",
             "DISCORD_HOME_CHANNEL",
             "DISCORD_HOME_CHANNEL_NAME",
             "DISCORD_REQUIRE_MENTION",

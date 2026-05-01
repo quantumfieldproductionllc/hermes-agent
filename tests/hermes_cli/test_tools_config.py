@@ -1,5 +1,6 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes_cli.tools_config import (
@@ -10,10 +11,12 @@ from hermes_cli.tools_config import (
     _platform_toolset_summary,
     _save_platform_tools,
     _toolset_has_keys,
+    _prompt_toolset_checklist,
     CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
     _visible_providers,
     tools_command,
+    tools_disable_enable_command,
 )
 
 
@@ -250,6 +253,135 @@ def test_get_platform_tools_no_mcp_sentinel_does_not_affect_other_platforms():
     # cli (not configured with no_mcp) should include MCP
     cli_enabled = _get_platform_tools(config, "cli")
     assert "exa" in cli_enabled
+
+
+def test_telegram_userbot_does_not_inherit_default_mcp_servers():
+    config = {
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+            "disabled-server": {"url": "https://example.com/mcp", "enabled": False},
+        }
+    }
+
+    enabled = _get_platform_tools(config, "telegram_userbot")
+
+    assert "web" in enabled
+    assert "clarify" in enabled
+    assert "exa" not in enabled
+    assert "disabled-server" not in enabled
+
+
+def test_telegram_userbot_does_not_inherit_default_plugin_toolsets(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_plugin_toolset_keys",
+        lambda: {"plugin_bundle"},
+    )
+    config = {"known_plugin_toolsets": {"cli": []}}
+
+    enabled = _get_platform_tools(config, "telegram_userbot")
+
+    assert "plugin_bundle" not in enabled
+
+
+def test_telegram_userbot_rejects_broad_explicit_toolsets_and_passthrough():
+    config = {
+        "platform_toolsets": {
+            "telegram_userbot": ["web", "terminal", "messaging", "exa"],
+        },
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "telegram_userbot")
+
+    assert "web" in enabled
+    assert "terminal" not in enabled
+    assert "messaging" not in enabled
+    assert "exa" not in enabled
+
+
+def test_telegram_userbot_keeps_restricted_default_when_broad_toolset_is_listed():
+    config = {
+        "platform_toolsets": {
+            "telegram_userbot": ["hermes-telegram-userbot", "terminal", "exa"],
+        },
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "telegram_userbot")
+
+    assert "web" in enabled
+    assert "clarify" in enabled
+    assert "terminal" not in enabled
+    assert "exa" not in enabled
+
+
+def test_save_platform_tools_strips_telegram_userbot_disallowed_entries():
+    config = {
+        "platform_toolsets": {
+            "telegram_userbot": ["web", "terminal", "exa"],
+        },
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+        },
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "telegram_userbot", {"web", "terminal"})
+
+    saved = config["platform_toolsets"]["telegram_userbot"]
+    assert "web" in saved
+    assert "terminal" not in saved
+    assert "exa" not in saved
+
+
+def test_telegram_userbot_checklist_hides_broad_toolsets(monkeypatch):
+    captured = {}
+
+    def fake_checklist(title, labels, pre_selected, **kwargs):
+        captured["title"] = title
+        captured["labels"] = labels
+        captured["pre_selected"] = pre_selected
+        return pre_selected
+
+    monkeypatch.setattr("hermes_cli.tools_config._estimate_tool_tokens", lambda: {})
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", fake_checklist)
+
+    selected = _prompt_toolset_checklist(
+        "Telegram Userbot",
+        {"web", "terminal"},
+        platform="telegram_userbot",
+    )
+
+    rendered = "\n".join(captured["labels"])
+    assert selected == {"web"}
+    assert "Web Search" in rendered
+    assert "Terminal" not in rendered
+    assert "Cross-Platform Messaging" not in rendered
+
+
+def test_tools_enable_rejects_broad_toolset_for_telegram_userbot(monkeypatch):
+    config = {"platform_toolsets": {"telegram_userbot": ["web"]}}
+    errors = []
+
+    monkeypatch.setattr("hermes_cli.tools_config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda cfg: None)
+    monkeypatch.setattr("hermes_cli.tools_config._print_error", errors.append)
+    monkeypatch.setattr("hermes_cli.tools_config._print_success", lambda _msg: None)
+
+    tools_disable_enable_command(
+        SimpleNamespace(
+            tools_action="enable",
+            platform="telegram_userbot",
+            names=["terminal"],
+        )
+    )
+
+    assert config["platform_toolsets"]["telegram_userbot"] == ["web"]
+    assert any("restricted platform 'telegram_userbot'" in error for error in errors)
 
 
 def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):

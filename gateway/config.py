@@ -80,6 +80,7 @@ class Platform(Enum):
     """
     LOCAL = "local"
     TELEGRAM = "telegram"
+    TELEGRAM_USERBOT = "telegram_userbot"
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
     SLACK = "slack"
@@ -340,6 +341,9 @@ class StreamingConfig:
 # that rely on the generic ``token or api_key`` check (Telegram, Discord,
 # Slack, Matrix, Mattermost, HomeAssistant) do not need an entry here.
 _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] = {
+    Platform.TELEGRAM_USERBOT: lambda cfg: bool(
+        cfg.extra.get("runtime_config_path")
+    ),
     Platform.WEIXIN: lambda cfg: bool(
         cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))
     ),
