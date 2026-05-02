@@ -8,7 +8,6 @@ Supports multiple concurrent approvals (parallel subagents, execute_code)
 via a per-session queue.
 """
 
-import asyncio
 import os
 import threading
 import time
@@ -19,7 +18,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.session import SessionSource
 
 
 def _make_source() -> SessionSource:
@@ -367,6 +366,18 @@ class TestBlockingApprovalE2E:
         os.environ.pop("HERMES_GATEWAY_SESSION", None)
         os.environ.pop("HERMES_EXEC_ASK", None)
         os.environ.pop("HERMES_SESSION_KEY", None)
+        # These tests exercise the blocking approval queue itself.  Disable
+        # the external Tirith scanner so a first-run download/network delay
+        # cannot race the short "approval notification was sent" assertion.
+        self._had_tirith_enabled = "TIRITH_ENABLED" in os.environ
+        self._old_tirith_enabled = os.environ.get("TIRITH_ENABLED")
+        os.environ["TIRITH_ENABLED"] = "false"
+
+    def teardown_method(self):
+        if self._had_tirith_enabled:
+            os.environ["TIRITH_ENABLED"] = self._old_tirith_enabled or ""
+        else:
+            os.environ.pop("TIRITH_ENABLED", None)
 
     def test_blocking_approval_approve_once(self):
         """check_all_command_guards blocks until resolve_gateway_approval is called."""
@@ -630,7 +641,7 @@ class TestFallbackNoCallback:
 
     def test_no_callback_returns_approval_required(self):
         """Without a registered callback, the old approval_required path is used."""
-        from tools.approval import check_all_command_guards, _pending
+        from tools.approval import check_all_command_guards
 
         os.environ["HERMES_EXEC_ASK"] = "1"
         os.environ["HERMES_SESSION_KEY"] = "no-callback-test"

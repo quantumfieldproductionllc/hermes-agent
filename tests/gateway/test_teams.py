@@ -1,15 +1,12 @@
 """Tests for the Microsoft Teams platform adapter plugin."""
 
-import asyncio
-import os
 import sys
 import types
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig, HomeChannel
+from gateway.config import PlatformConfig
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 
@@ -25,6 +22,9 @@ def _ensure_teams_mock():
     # Build the module hierarchy
     microsoft_teams = types.ModuleType("microsoft_teams")
     microsoft_teams_apps = types.ModuleType("microsoft_teams.apps")
+    microsoft_teams_common = types.ModuleType("microsoft_teams.common")
+    microsoft_teams_common_http = types.ModuleType("microsoft_teams.common.http")
+    microsoft_teams_common_http_client = types.ModuleType("microsoft_teams.common.http.client")
     microsoft_teams_api = types.ModuleType("microsoft_teams.api")
     microsoft_teams_api_activities = types.ModuleType("microsoft_teams.api.activities")
     microsoft_teams_api_activities_typing = types.ModuleType("microsoft_teams.api.activities.typing")
@@ -76,6 +76,12 @@ def _ensure_teams_mock():
 
     microsoft_teams_apps.App = MockApp
     microsoft_teams_apps.ActivityContext = MagicMock
+
+    class MockClientOptions:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    microsoft_teams_common_http_client.ClientOptions = MockClientOptions
 
     # MessageActivity mock
     microsoft_teams_api.MessageActivity = MagicMock
@@ -138,6 +144,9 @@ def _ensure_teams_mock():
     for name, mod in {
         "microsoft_teams": microsoft_teams,
         "microsoft_teams.apps": microsoft_teams_apps,
+        "microsoft_teams.common": microsoft_teams_common,
+        "microsoft_teams.common.http": microsoft_teams_common_http,
+        "microsoft_teams.common.http.client": microsoft_teams_common_http_client,
         "microsoft_teams.api": microsoft_teams_api,
         "microsoft_teams.api.activities": microsoft_teams_api_activities,
         "microsoft_teams.api.activities.typing": microsoft_teams_api_activities_typing,

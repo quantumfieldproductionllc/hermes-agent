@@ -243,6 +243,16 @@ def _home_target_env_var(platform_name: str) -> str:
     )
 
 
+def _is_transparent_userbot_platform(platform: Any) -> bool:
+    """Return True for real-account userbot platforms that must not expose gateway UI.
+
+    These adapters represent a human-like account surface, not a bot control
+    surface.  Do not send setup/onboarding/status/tool-progress chrome there.
+    Accept both Platform enum values and test doubles with a ``value`` attribute.
+    """
+    return str(getattr(platform, "value", platform) or "") == "telegram_userbot"
+
+
 _ensure_ssl_certs()
 
 # Add parent directory to path
@@ -1944,6 +1954,9 @@ class GatewayRunner:
             else:
                 message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
 
+            if _is_transparent_userbot_platform(event.source.platform):
+                return True
+
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
@@ -2001,6 +2014,11 @@ class GatewayRunner:
                 running_agent.interrupt(event.text)
             except Exception:
                 pass  # don't let interrupt failure block the ack
+
+        # Real-account userbot platforms should accept the follow-up input
+        # semantics above but must not emit gateway/status chrome into the chat.
+        if _is_transparent_userbot_platform(event.source.platform):
+            return True
 
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
@@ -5116,6 +5134,8 @@ class GatewayRunner:
             return await self._handle_voice_command(event)
 
         if self._draining:
+            if _is_transparent_userbot_platform(event.source.platform):
+                return None
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
         # User-defined quick commands (bypass agent loop, no LLM call)
@@ -5415,9 +5435,11 @@ class GatewayRunner:
                     "VOICE_TOOLS_OPENAI_KEY",
                 )
                 if any(marker in message_text for marker in _stt_fail_markers):
+                    if _is_transparent_userbot_platform(source.platform):
+                        return "Sorry, I can’t listen to voice messages right now — can you type it?"
                     _stt_adapter = self.adapters.get(source.platform)
                     _stt_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                    if _stt_adapter:
+                    if _stt_adapter and not _is_transparent_userbot_platform(source.platform):
                         try:
                             _stt_msg = (
                                 "🎤 I received your voice message but can't transcribe it — "
@@ -5514,7 +5536,7 @@ class GatewayRunner:
                 )
                 if _ctx_result.blocked:
                     _adapter = self.adapters.get(source.platform)
-                    if _adapter:
+                    if _adapter and not _is_transparent_userbot_platform(source.platform):
                         await _adapter.send(
                             source.chat_id,
                             "\n".join(_ctx_result.warnings) or "Context injection refused.",
@@ -5624,7 +5646,7 @@ class GatewayRunner:
                 )
                 if should_notify:
                     adapter = self.adapters.get(source.platform)
-                    if adapter:
+                    if adapter and not _is_transparent_userbot_platform(source.platform):
                         if reset_reason == "suspended":
                             reason_text = "previous session was stopped or interrupted"
                         elif reset_reason == "daily":
@@ -5964,7 +5986,11 @@ class GatewayRunner:
                                         )
                                         try:
                                             _adapter = self.adapters.get(source.platform)
-                                            if _adapter and source.chat_id:
+                                            if (
+                                                _adapter
+                                                and source.chat_id
+                                                and not _is_transparent_userbot_platform(source.platform)
+                                            ):
                                                 await _adapter.send(source.chat_id, _warn_msg, metadata=_hyg_meta)
                                         except Exception as _werr:
                                             logger.warning(
@@ -5988,7 +6014,11 @@ class GatewayRunner:
                                         )
                                         try:
                                             _adapter = self.adapters.get(source.platform)
-                                            if _adapter and source.chat_id:
+                                            if (
+                                                _adapter
+                                                and source.chat_id
+                                                and not _is_transparent_userbot_platform(source.platform)
+                                            ):
                                                 await _adapter.send(source.chat_id, _aux_msg, metadata=_hyg_meta)
                                         except Exception as _werr:
                                             logger.warning(
@@ -6003,17 +6033,31 @@ class GatewayRunner:
                             "Session hygiene auto-compress failed: %s", e
                         )
 
-        # First-message onboarding -- only on the very first interaction ever
-        if not history and not self.session_store.has_any_sessions():
+        # First-message onboarding -- only on the very first interaction ever.
+        # Real-account userbot platforms must not reveal Hermes/bot mechanics or
+        # slash-command affordances to external contacts.
+        if (
+            not history
+            and not _is_transparent_userbot_platform(source.platform)
+            and not self.session_store.has_any_sessions()
+        ):
             context_prompt += (
                 "\n\n[System note: This is the user's very first message ever. "
                 "Briefly introduce yourself and mention that /help shows available commands. "
                 "Keep the introduction concise -- one or two sentences max.]"
             )
         
-        # One-time prompt if no home channel is set for this platform
-        # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        # One-time prompt if no home channel is set for this platform.
+        # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.).
+        # Skip real-account userbot platforms: they are meant to look like a human account,
+        # so gateway setup/onboarding notices must never be sent into user conversations.
+        if (
+            not history
+            and source.platform
+            and source.platform != Platform.LOCAL
+            and source.platform != Platform.WEBHOOK
+            and not _is_transparent_userbot_platform(source.platform)
+        ):
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
             if not os.getenv(env_key):
@@ -6456,7 +6500,7 @@ class GatewayRunner:
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.
                 # still surface the runtime metadata on the final reply.
-                if _footer_line:
+                if _footer_line and not _is_transparent_userbot_platform(source.platform):
                     try:
                         _foot_adapter = self.adapters.get(source.platform)
                         if _foot_adapter:
@@ -6511,6 +6555,8 @@ class GatewayRunner:
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
+                    if _is_transparent_userbot_platform(source.platform):
+                        return "Sorry, I’m losing the thread a bit. Can you resend the important part?"
                     return (
                         "⚠️ Session too large for the model's context window.\n"
                         "Use /compact to compress the conversation, or "
@@ -6518,6 +6564,8 @@ class GatewayRunner:
                     )
                 elif status_code == 400:
                     status_hint = " The request was rejected by the API."
+            if _is_transparent_userbot_platform(source.platform):
+                return "Sorry, I’m having trouble replying right now. Can you try me again in a bit?"
             return (
                 f"Sorry, I encountered an error ({error_type}).\n"
                 f"{error_detail}\n"
@@ -11728,12 +11776,18 @@ class GatewayRunner:
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = (
+            progress_mode != "off"
+            and source.platform != Platform.WEBHOOK
+            and not _is_transparent_userbot_platform(source.platform)
+        )
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
-        # in chat platforms while opting into concise mid-turn updates.
+        # in chat platforms while opting into concise mid-turn updates.  Keep
+        # transparent userbot chats final-response-only.
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
+            and not _is_transparent_userbot_platform(source.platform)
             and is_truthy_value(
                 display_config.get("interim_assistant_messages"),
                 default=True,

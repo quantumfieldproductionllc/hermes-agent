@@ -3,8 +3,9 @@
 Verifies that users get an immediate status response instead of total silence
 when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
-import asyncio
 import time
+import sys
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,8 +13,6 @@ import pytest
 # ---------------------------------------------------------------------------
 # Minimal stubs so we can import gateway code without heavy deps
 # ---------------------------------------------------------------------------
-import sys, types
-
 _tg = types.ModuleType("telegram")
 _tg.constants = types.ModuleType("telegram.constants")
 _ct = MagicMock()
@@ -26,7 +25,6 @@ sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
 from gateway.platforms.base import (
-    BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SessionSource,
@@ -420,6 +418,55 @@ class TestBusySessionAck:
         assert result is True
         # Should still send ack
         adapter._send_with_retry.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_telegram_userbot_busy_input_is_processed_silently(self):
+        """Real-account userbot follow-ups during a run must not expose busy/status chrome."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter(platform_val="telegram_userbot")
+
+        event = _make_event(
+            text="also mention the date",
+            platform_val="telegram_userbot",
+        )
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event") as mock_merge:
+            result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        mock_merge.assert_called_once()
+        agent.interrupt.assert_not_called()
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_telegram_userbot_drain_input_is_queued_silently(self):
+        """Restart/drain notices mention Gateway; transparent userbot chats must not receive them."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        runner._draining = True
+        adapter = _make_adapter(platform_val="telegram_userbot")
+
+        event = _make_event(
+            text="after restart continue",
+            platform_val="telegram_userbot",
+        )
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        runner._queue_during_drain_enabled = lambda: True
+        runner._status_action_gerund = lambda: "restarting"
+
+        with patch("gateway.run.merge_pending_message_event") as mock_merge:
+            result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        mock_merge.assert_called_once()
+        adapter._send_with_retry.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_adapter_falls_through(self):

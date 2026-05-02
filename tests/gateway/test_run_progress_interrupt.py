@@ -8,7 +8,6 @@ of tool-progress bubbles for calls that were already parsed from the LLM
 response — making the interrupt feel ignored.
 """
 
-import asyncio
 import importlib
 import sys
 import time
@@ -71,7 +70,8 @@ class PreInterruptAgent:
         return self._interrupt_requested
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback("tool.started", "web_search", "first search", {})
+        if self.tool_progress_callback:
+            self.tool_progress_callback("tool.started", "web_search", "first search", {})
         time.sleep(0.35)  # let the drain loop process
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
@@ -131,7 +131,7 @@ def _make_runner(adapter):
     return runner
 
 
-async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
+async def _run_once(monkeypatch, tmp_path, agent_cls, session_id, platform=Platform.TELEGRAM):
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -142,7 +142,7 @@ async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    adapter = ProgressCaptureAdapter()
+    adapter = ProgressCaptureAdapter(platform=platform)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -152,7 +152,7 @@ async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
         lambda: {"api_key": "fake"},
     )
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=platform,
         chat_id="-1001",
         chat_type="group",
         thread_id="17585",
@@ -163,7 +163,7 @@ async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
         history=[],
         source=source,
         session_id=session_id,
-        session_key="agent:main:telegram:group:-1001:17585",
+        session_key=f"agent:main:{platform.value}:group:-1001:17585",
     )
     return adapter, result
 
@@ -180,6 +180,25 @@ async def test_baseline_non_interrupted_agent_renders_progress(monkeypatch, tmp_
         "baseline agent should render its tool-progress event — "
         "if this fails the test harness is broken, not the fix"
     )
+
+
+@pytest.mark.asyncio
+async def test_telegram_userbot_never_renders_tool_progress(monkeypatch, tmp_path):
+    """Real-account userbot chats must not show tool-progress bubbles or hints."""
+    adapter, result = await _run_once(
+        monkeypatch,
+        tmp_path,
+        PreInterruptAgent,
+        "sess-userbot-progress",
+        platform=Platform.TELEGRAM_USERBOT,
+    )
+    assert result["final_response"] == "done"
+    rendered = " ".join(c["content"] for c in adapter.sent) + " " + " ".join(
+        c["content"] for c in adapter.edits
+    )
+    assert "first search" not in rendered
+    assert "web_search" not in rendered
+    assert "/verbose" not in rendered
 
 
 @pytest.mark.asyncio
