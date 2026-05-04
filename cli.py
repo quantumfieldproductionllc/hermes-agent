@@ -459,32 +459,19 @@ def load_cli_config() -> Dict[str, Any]:
     if "backend" in terminal_config:
         terminal_config["env_type"] = terminal_config["backend"]
     
-    # Handle special cwd values: "." or "auto" means use current working directory.
-    # Only resolve to the host's CWD for the local backend where the host
-    # filesystem is directly accessible.  For ALL remote/container backends
-    # (ssh, docker, modal, singularity), the host path doesn't exist on the
-    # target -- remove the key so terminal_tool.py uses its per-backend default.
-    #
-    # GUARD: If TERMINAL_CWD is already set to a real absolute path (by the
-    # gateway's config bridge earlier in the process), don't clobber it.
-    # This prevents a lazy import of cli.py during gateway runtime from
-    # rewriting TERMINAL_CWD to the service's working directory.
-    # See issue #10817.
+    # CWD resolution for CLI/TUI. The gateway has its own config bridge in
+    # gateway/run.py but may lazily import cli.py (triggering this code).
+    # Local backend: always os.getcwd(). Use `cd /dir && hermes` to control it.
+    # Non-local with placeholder: pop so terminal_tool uses its per-backend default.
+    # Non-local with explicit path: keep as-is.
     _CWD_PLACEHOLDERS = (".", "auto", "cwd")
-    if terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
-        _existing_cwd = os.environ.get("TERMINAL_CWD", "")
-        if _existing_cwd and _existing_cwd not in _CWD_PLACEHOLDERS and os.path.isabs(_existing_cwd):
-            # Gateway (or earlier startup) already resolved a real path — keep it
-            terminal_config["cwd"] = _existing_cwd
-            defaults["terminal"]["cwd"] = _existing_cwd
-        else:
-            effective_backend = terminal_config.get("env_type", "local")
-            if effective_backend == "local":
-                terminal_config["cwd"] = os.getcwd()
-                defaults["terminal"]["cwd"] = terminal_config["cwd"]
-            else:
-                # Remove so TERMINAL_CWD stays unset → tool picks backend default
-                terminal_config.pop("cwd", None)
+    effective_backend = terminal_config.get("env_type", "local")
+
+    if effective_backend == "local":
+        terminal_config["cwd"] = os.getcwd()
+        defaults["terminal"]["cwd"] = terminal_config["cwd"]
+    elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
+        terminal_config.pop("cwd", None)
     
     env_mappings = {
         "env_type": "TERMINAL_ENV",
@@ -517,13 +504,18 @@ def load_cli_config() -> Dict[str, Any]:
         "sudo_password": "SUDO_PASSWORD",
     }
     
-    # Apply config values to env vars so terminal_tool picks them up.
-    # If the config file explicitly has a [terminal] section, those values are
-    # authoritative and override any .env settings.  When using defaults only
-    # (no config file or no terminal section), don't overwrite env vars that
-    # were already set by .env -- the user's .env is the fallback source.
+    # Bridge config → env vars for terminal_tool. TERMINAL_CWD is force-exported
+    # UNLESS we're inside a gateway process (detected by _HERMES_GATEWAY marker)
+    # where it was already set correctly by gateway/run.py's config bridge.
+    _is_gateway = os.environ.get("_HERMES_GATEWAY") == "1"
     for config_key, env_var in env_mappings.items():
         if config_key in terminal_config:
+            if env_var == "TERMINAL_CWD":
+                if _is_gateway:
+                    continue
+                # CLI: always export (overrides stale .env or inherited values)
+                os.environ[env_var] = str(terminal_config[config_key])
+                continue
             if _file_has_terminal_config or env_var not in os.environ:
                 val = terminal_config[config_key]
                 if isinstance(val, list):
@@ -934,6 +926,20 @@ def _run_state_db_auto_maintenance(session_db) -> None:
     try:
         from hermes_cli.config import load_config as _load_full_config
         from hermes_constants import get_hermes_home as _get_hermes_home
+        _hermes_home_maint = _get_hermes_home()
+
+        # One-time prune of empty TUI ghost sessions.
+        try:
+            if not session_db.get_meta("ghost_session_prune_v1"):
+                pruned = session_db.prune_empty_ghost_sessions(
+                    sessions_dir=_hermes_home_maint / "sessions"
+                )
+                session_db.set_meta("ghost_session_prune_v1", "1")
+                if pruned:
+                    logger.info("Pruned %d empty TUI ghost sessions", pruned)
+        except Exception as _prune_exc:
+            logger.debug("Ghost session prune skipped: %s", _prune_exc)
+
         cfg = (_load_full_config().get("sessions") or {})
         if not cfg.get("auto_prune", False):
             return
@@ -941,7 +947,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
             retention_days=int(cfg.get("retention_days", 90)),
             min_interval_hours=int(cfg.get("min_interval_hours", 24)),
             vacuum=bool(cfg.get("vacuum_after_prune", True)),
-            sessions_dir=_get_hermes_home() / "sessions",
+            sessions_dir=_hermes_home_maint / "sessions",
         )
     except Exception as exc:
         logger.debug("state.db auto-maintenance skipped: %s", exc)
@@ -2914,7 +2920,14 @@ class HermesCLI:
 
         def _expand_ref(match):
             path = Path(match.group(1))
-            return path.read_text(encoding="utf-8") if path.exists() else match.group(0)
+            # Use try/except instead of path.exists() to avoid TOCTOU race:
+            # the paste file may be deleted between check and read, causing
+            # the input to be silently dropped (#17666).
+            try:
+                return path.read_text(encoding="utf-8")
+            except (OSError, IOError):
+                logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
+                return match.group(0)
 
         return paste_ref_re.sub(_expand_ref, text)
 
@@ -3618,14 +3631,18 @@ class HermesCLI:
                 tuple(runtime.get("args") or ()),
             )
 
-            if self._pending_title and self._session_db:
+            # Force-create DB row on /title intent, then apply title.
+            if self._pending_title and self._session_db and self.agent:
                 try:
-                    self._session_db.set_session_title(self.session_id, self._pending_title)
-                    _cprint(f"  Session title applied: {self._pending_title}")
-                    self._pending_title = None
+                    self.agent._ensure_db_session()
+                    if self.agent._session_db_created:
+                        self._session_db.set_session_title(self.session_id, self._pending_title)
+                        _cprint(f"  Session title applied: {self._pending_title}")
+                        self._pending_title = None
+                    # else: row creation failed transiently — keep _pending_title for retry
                 except (ValueError, Exception) as e:
                     _cprint(f"  Could not apply pending title: {e}")
-                    self._pending_title = None
+                    # Keep _pending_title so it can be retried after row creation succeeds
             return True
         except Exception as e:
             ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
@@ -4953,6 +4970,7 @@ class HermesCLI:
 
             if self._session_db:
                 try:
+                    self.agent._session_db_created = False
                     self._session_db.create_session(
                         session_id=self.session_id,
                         source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
@@ -4962,6 +4980,7 @@ class HermesCLI:
                             "reasoning_config": self.reasoning_config,
                         },
                     )
+                    self.agent._session_db_created = True
                 except Exception:
                     pass
             # Notify memory providers that session_id rotated to a fresh
@@ -11564,7 +11583,7 @@ class HermesCLI:
                             pass  # Non-fatal — don't break the main loop
 
                 except Exception as e:
-                    print(f"Error: {e}")
+                    logger.warning("process_loop unhandled error (msg may be lost): %s", e)
         
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)

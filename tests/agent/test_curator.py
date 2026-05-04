@@ -86,9 +86,22 @@ def test_curator_config_overrides(curator_env, monkeypatch):
 # should_run_now
 # ---------------------------------------------------------------------------
 
-def test_first_run_always_eligible(curator_env):
+def test_first_run_defers(curator_env):
+    """The FIRST observation of the curator (fresh install, no state file)
+    must NOT trigger an immediate run. The curator is designed to run after
+    a full ``interval_hours`` of skill activity, not on the first background
+    tick after installation. Fixes #18373.
+    """
     c = curator_env["curator"]
-    assert c.should_run_now() is True
+    # No state file — should defer and seed last_run_at.
+    assert c.should_run_now() is False
+    state = c.load_state()
+    assert state.get("last_run_at") is not None, (
+        "first observation should seed last_run_at so the interval clock "
+        "starts ticking instead of firing immediately next tick"
+    )
+    # A second immediate call still returns False (seeded, not yet stale).
+    assert c.should_run_now() is False
 
 
 def test_recent_run_blocks(curator_env):
@@ -265,6 +278,77 @@ def test_run_review_records_state(curator_env):
     assert state["last_run_summary"] is not None
 
 
+def test_dry_run_does_not_advance_state(curator_env, monkeypatch):
+    """Dry-run previews must not bump last_run_at or run_count. A preview
+    shouldn't defer the next scheduled real pass or look like a real run in
+    `hermes curator status`. Fixes #18373.
+    """
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+
+    # Stub the LLM so the test doesn't need a provider.
+    monkeypatch.setattr(
+        c, "_run_llm_review",
+        lambda prompt: {
+            "final": "", "summary": "dry preview", "model": "", "provider": "",
+            "tool_calls": [], "error": None,
+        },
+    )
+
+    c.run_curator_review(synchronous=True, dry_run=True)
+    state = c.load_state()
+    assert state.get("last_run_at") is None, "dry-run must not seed last_run_at"
+    assert state.get("run_count", 0) == 0, "dry-run must not bump run_count"
+    assert "dry-run" in (state.get("last_run_summary") or ""), (
+        "dry-run summary should be labeled so status output is unambiguous"
+    )
+
+
+def test_dry_run_injects_report_only_banner(curator_env, monkeypatch):
+    """The dry-run prompt must carry a banner instructing the LLM not to
+    call any mutating tool. This is defense in depth — the caller also
+    skips automatic transitions — but the LLM prompt is the only guard
+    against the model calling skill_manage directly."""
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+
+    captured = {}
+    def _stub(prompt):
+        captured["prompt"] = prompt
+        return {"final": "", "summary": "s", "model": "", "provider": "",
+                "tool_calls": [], "error": None}
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
+
+    c.run_curator_review(synchronous=True, dry_run=True)
+    assert "DRY-RUN" in captured["prompt"]
+    assert "DO NOT" in captured["prompt"]
+
+
+def test_dry_run_skips_automatic_transitions(curator_env, monkeypatch):
+    """Dry-run must not call apply_automatic_transitions — the auto pass
+    archives skills deterministically, and a preview must not touch the
+    filesystem."""
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+
+    called = {"n": 0}
+    def _explode(*_a, **_kw):
+        called["n"] += 1
+        return {"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0}
+    monkeypatch.setattr(c, "apply_automatic_transitions", _explode)
+    monkeypatch.setattr(
+        c, "_run_llm_review",
+        lambda p: {"final": "", "summary": "s", "model": "", "provider": "",
+                   "tool_calls": [], "error": None},
+    )
+
+    c.run_curator_review(synchronous=True, dry_run=True)
+    assert called["n"] == 0, "dry-run must skip apply_automatic_transitions"
+
+
 def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
     c = curator_env["curator"]
     skills_dir = curator_env["home"] / "skills"
@@ -327,10 +411,30 @@ def test_maybe_run_curator_runs_when_eligible(curator_env, monkeypatch):
     c = curator_env["curator"]
     skills_dir = curator_env["home"] / "skills"
     _write_skill(skills_dir, "a")
+    # Seed last_run_at far in the past so the interval gate opens — the
+    # "no state" path intentionally defers the first run now (#18373).
+    long_ago = datetime.now(timezone.utc) - timedelta(hours=c.get_interval_hours() * 2)
+    c.save_state({"last_run_at": long_ago.isoformat(), "paused": False})
     # Force idle over threshold
     result = c.maybe_run_curator(idle_for_seconds=99999.0)
     assert result is not None
     assert "started_at" in result
+
+
+def test_maybe_run_curator_defers_on_fresh_install(curator_env):
+    """Fresh install (no curator state file) must NOT fire the curator on
+    the first gateway tick. The first observation seeds last_run_at and
+    returns None. Fixes #18373."""
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    # Infinite idle — the only thing that should block the run is the new
+    # deferred-first-run gate.
+    result = c.maybe_run_curator(idle_for_seconds=99999.0)
+    assert result is None
+    # And the next tick still defers (we seeded last_run_at to "now").
+    result2 = c.maybe_run_curator(idle_for_seconds=99999.0)
+    assert result2 is None
 
 
 def test_maybe_run_curator_swallows_exceptions(curator_env, monkeypatch):
@@ -539,6 +643,86 @@ def test_review_model_honors_auxiliary_curator_slot(curator_env):
     assert curator._resolve_review_model(cfg) == (
         "openrouter", "openai/gpt-5.4-mini",
     )
+
+
+def test_review_runtime_passes_auxiliary_curator_credentials(curator_env):
+    """Per-slot api_key/base_url must ride into resolve_runtime_provider (not main-only creds)."""
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "curator": {
+                "provider": "custom",
+                "model": "local-mini",
+                "api_key": "sk-curator-only",
+                "base_url": "http://localhost:11434/v1",
+            },
+        },
+    }
+    binding = curator._resolve_review_runtime(cfg)
+    assert binding.provider == "custom"
+    assert binding.model == "local-mini"
+    assert binding.explicit_api_key == "sk-curator-only"
+    assert binding.explicit_base_url == "http://localhost:11434/v1"
+
+
+def test_review_runtime_strips_blank_aux_credentials(curator_env):
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "curator": {
+                "provider": "openrouter",
+                "model": "x/y",
+                "api_key": "   ",
+                "base_url": "",
+            },
+        },
+    }
+    binding = curator._resolve_review_runtime(cfg)
+    assert binding.explicit_api_key is None
+    assert binding.explicit_base_url is None
+
+
+def test_review_runtime_ignores_auxiliary_credentials_when_using_main(curator_env):
+    """Falling through to main model must not pick up stray auxiliary.curator secrets."""
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "curator": {
+                "provider": "auto",
+                "model": "",
+                "api_key": "must-not-leak",
+                "base_url": "http://curator-slot-ignored/",
+            },
+        },
+    }
+    binding = curator._resolve_review_runtime(cfg)
+    assert (binding.provider, binding.model) == ("openrouter", "openai/gpt-5.5")
+    assert binding.explicit_api_key is None
+    assert binding.explicit_base_url is None
+
+
+def test_review_runtime_legacy_auxiliary_carry_credentials(curator_env, caplog):
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "curator": {
+            "auxiliary": {
+                "provider": "custom",
+                "model": "m",
+                "api_key": "legacy-key",
+                "base_url": "http://legacy/v1",
+            },
+        },
+    }
+    import logging
+    with caplog.at_level(logging.INFO, logger="agent.curator"):
+        binding = curator._resolve_review_runtime(cfg)
+    assert binding.explicit_api_key == "legacy-key"
+    assert binding.explicit_base_url == "http://legacy/v1"
+    assert any("deprecated curator.auxiliary" in rec.message for rec in caplog.records)
 
 
 def test_review_model_auxiliary_curator_partial_override_falls_back(curator_env):
