@@ -32,43 +32,38 @@ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
-    ("moonshotai/kimi-k2.6",            "recommended"),
-    ("anthropic/claude-opus-4.7",       ""),
-    ("anthropic/claude-opus-4.6",       ""),
-    ("anthropic/claude-sonnet-4.6",     ""),
-    ("qwen/qwen3.6-plus",               ""),
-    ("anthropic/claude-sonnet-4.5",     ""),
-    ("anthropic/claude-haiku-4.5",      ""),
-    ("openrouter/elephant-alpha",       "free"),
-    ("openrouter/owl-alpha",            "free"),
-    ("openai/gpt-5.5",                  ""),
-    ("openai/gpt-5.4-mini",             ""),
-    ("xiaomi/mimo-v2.5-pro",             ""),
-    ("xiaomi/mimo-v2.5",                 ""),
-    ("tencent/hy3-preview:free",         "free"),
-    ("openai/gpt-5.3-codex",            ""),
-    ("google/gemini-3-pro-image-preview", ""),
-    ("google/gemini-3-flash-preview",   ""),
-    ("google/gemini-3.1-pro-preview",     ""),
+    ("anthropic/claude-opus-4.7",              ""),
+    ("anthropic/claude-opus-4.6",              ""),
+    ("anthropic/claude-sonnet-4.6",            ""),
+    ("moonshotai/kimi-k2.6",                   "recommended"),
+    ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
+    ("qwen/qwen3.6-plus",                      ""),
+    ("anthropic/claude-haiku-4.5",             ""),
+    ("openai/gpt-5.5",                         ""),
+    ("openai/gpt-5.5-pro",                     ""),
+    ("openai/gpt-5.4-mini",                    ""),
+    ("openai/gpt-5.4-nano",                    ""),
+    ("openai/gpt-5.3-codex",                   ""),
+    ("xiaomi/mimo-v2.5-pro",                   ""),
+    ("tencent/hy3-preview",                    ""),
+    ("google/gemini-3-pro-image-preview",      ""),
+    ("google/gemini-3-flash-preview",          ""),
+    ("google/gemini-3.1-pro-preview",          ""),
     ("google/gemini-3.1-flash-lite-preview",   ""),
-    ("qwen/qwen3.5-plus-02-15",         ""),
-    ("qwen/qwen3.5-35b-a3b",            ""),
-    ("stepfun/step-3.5-flash",          ""),
-    ("minimax/minimax-m2.7",            ""),
-    ("minimax/minimax-m2.5",            ""),
-    ("minimax/minimax-m2.5:free",       "free"),
-    ("z-ai/glm-5.1",                    ""),
-    ("z-ai/glm-5v-turbo",               ""),
-    ("z-ai/glm-5-turbo",                ""),
-    ("x-ai/grok-4.20",                  ""),
-    ("x-ai/grok-4.3",                   ""),
+    ("qwen/qwen3.6-35b-a3b",                   ""),
+    ("stepfun/step-3.5-flash",                 ""),
+    ("minimax/minimax-m2.7",                   ""),
+    ("z-ai/glm-5.1",                           ""),
+    ("x-ai/grok-4.20",                         ""),
+    ("x-ai/grok-4.3",                          ""),
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
+    ("deepseek/deepseek-v4-pro",               ""),
+    # Free tier
+    ("openrouter/elephant-alpha",              "free"),
+    ("openrouter/owl-alpha",                   "free"),
+    ("tencent/hy3-preview:free",               "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
-    ("arcee-ai/trinity-large-preview:free", "free"),
-    ("arcee-ai/trinity-large-thinking",  ""),
-    ("openai/gpt-5.5-pro",              ""),
-    ("openai/gpt-5.4-nano",             ""),
-    ("deepseek/deepseek-v4-pro",        ""),
+    ("inclusionai/ring-2.6-1t:free",           "free"),
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
@@ -157,37 +152,29 @@ def _xai_curated_models() -> list[str]:
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
-        "moonshotai/kimi-k2.6",
-        "xiaomi/mimo-v2.5-pro",
-        "xiaomi/mimo-v2.5",
-        "tencent/hy3-preview",
         "anthropic/claude-opus-4.7",
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
-        "anthropic/claude-sonnet-4.5",
+        "moonshotai/kimi-k2.6",
+        "qwen/qwen3.6-plus",
         "anthropic/claude-haiku-4.5",
         "openai/gpt-5.5",
+        "openai/gpt-5.5-pro",
         "openai/gpt-5.4-mini",
+        "openai/gpt-5.4-nano",
         "openai/gpt-5.3-codex",
+        "xiaomi/mimo-v2.5-pro",
+        "tencent/hy3-preview",
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
         "google/gemini-3.1-pro-preview",
         "google/gemini-3.1-flash-lite-preview",
-        "qwen/qwen3.5-plus-02-15",
-        "qwen/qwen3.5-35b-a3b",
+        "qwen/qwen3.6-35b-a3b",
         "stepfun/step-3.5-flash",
         "minimax/minimax-m2.7",
-        "minimax/minimax-m2.5",
-        "minimax/minimax-m2.5:free",
         "z-ai/glm-5.1",
-        "z-ai/glm-5v-turbo",
-        "z-ai/glm-5-turbo",
-        "x-ai/grok-4.20-beta",
         "x-ai/grok-4.3",
         "nvidia/nemotron-3-super-120b-a12b",
-        "arcee-ai/trinity-large-thinking",
-        "openai/gpt-5.5-pro",
-        "openai/gpt-5.4-nano",
         "deepseek/deepseek-v4-pro",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
@@ -412,6 +399,18 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen3-coder-plus",
         "qwen3-coder-next",
         # Third-party models available on coding-intl
+        "glm-5",
+        "glm-4.7",
+        "MiniMax-M2.5",
+    ],
+    # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
+    # separate provider ID with its own base_url_env_var.
+    "alibaba-coding-plan": [
+        "qwen3.6-plus",
+        "qwen3.5-plus",
+        "qwen3-coder-plus",
+        "qwen3-coder-next",
+        "kimi-k2.5",
         "glm-5",
         "glm-4.7",
         "MiniMax-M2.5",
@@ -811,9 +810,9 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
-# that is not already in the list above.  Adding providers/*.py is sufficient
-# to expose a new provider in the model picker, /model, and all downstream
-# consumers — no edits to this file needed.
+# that is not already in the list above.  Adding plugins/model-providers/<name>/
+# is sufficient to expose a new provider in the model picker, /model, and all
+# downstream consumers — no edits to this file needed.
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
 try:
     from providers import list_providers as _list_providers_for_canonical
