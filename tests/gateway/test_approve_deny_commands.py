@@ -646,7 +646,7 @@ class TestFallbackNoCallback:
         to ``pending_approval`` to make the state distinguishable from a
         failed tool call.
         """
-        from tools.approval import check_all_command_guards, _pending
+        from tools.approval import check_all_command_guards
 
         os.environ["HERMES_EXEC_ASK"] = "1"
         os.environ["HERMES_SESSION_KEY"] = "no-callback-test"
