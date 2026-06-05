@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import logging
 from pathlib import Path
@@ -82,6 +83,13 @@ class ExperienceMemoryEngine:
             salt=salt,
             scope_level=kwargs.get("scope_level"),
         )
+        lineage = tuple(
+            str(item)
+            for item in (kwargs.get("session_lineage") or ())
+            if str(item or "") and str(item or "") != str(session_id or "")
+        )
+        if lineage:
+            self.scope = replace(self.scope, session_lineage=lineage)
         self.initialized = True
 
     def get_tool_schemas(self) -> list[dict]:
@@ -223,6 +231,35 @@ class ExperienceMemoryEngine:
         except Exception as exc:
             logger.warning("experience_memory sync_turn failed: %s", exc, exc_info=True)
             return None
+
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        session_lineage: list[str] | tuple[str, ...] | None = None,
+        reset: bool = False,
+        reason: str = "",
+        **kwargs,
+    ) -> None:
+        """Update EME scope metadata when Hermes rotates session ids."""
+        if self.scope is None:
+            return
+        try:
+            lineage: list[str] = [] if reset else list(getattr(self.scope, "session_lineage", ()))
+            if not reset:
+                for value in (*(session_lineage or ()), self.scope.session_id, parent_session_id):
+                    text = str(value or "")
+                    if text and text != str(new_session_id or "") and text not in lineage:
+                        lineage.append(text)
+            self.scope = replace(
+                self.scope,
+                session_id=str(new_session_id or ""),
+                parent_session_id="" if reset else str(parent_session_id or ""),
+                session_lineage=tuple(lineage),
+            )
+        except Exception as exc:
+            logger.debug("experience_memory on_session_switch failed: %s", exc)
 
     def on_pre_compress(self, *args, **kwargs) -> None:
         return None

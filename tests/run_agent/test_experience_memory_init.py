@@ -120,3 +120,25 @@ def test_gateway_metadata_initializes_chat_scope(hermes_home):
         assert agent._experience_memory.scope.chat_scope_hash
     finally:
         agent.shutdown_memory_provider([])
+
+
+def test_gateway_session_scope_initializes_lineage_from_constructor(hermes_home):
+    _write_config(hermes_home, enabled=True)
+
+    agent = _make_agent(
+        enabled_toolsets=["experience_memory"],
+        platform="gateway",
+        session_id="child-session",
+        parent_session_id="parent-session",
+        session_lineage=["root-session", "parent-session", "child-session"],
+        gateway_session_key="gw-child",
+    )
+    try:
+        assert agent._experience_memory is not None
+        scope = agent._experience_memory.scope
+        assert scope.scope_level == "session"
+        assert scope.session_id == "child-session"
+        assert scope.parent_session_id == "parent-session"
+        assert scope.session_lineage == ("root-session", "parent-session")
+    finally:
+        agent.shutdown_memory_provider([])

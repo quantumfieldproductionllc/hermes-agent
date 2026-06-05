@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import json
 import time
 import pytest
 
@@ -593,11 +594,119 @@ class TestMessageStorage:
         assert conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
 
 
+    def test_replayed_reasoning_fields_strip_internal_context_blocks(self, db):
+        db.create_session(session_id="s1", source="cli")
+        hidden = "<experience-memory-context>\nhidden recalled lesson\n</experience-memory-context>"
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Visible",
+            reasoning=f"before\n{hidden}\nafter",
+            reasoning_content=hidden,
+            reasoning_details=[{"summary": hidden, "safe": "kept"}],
+            codex_reasoning_items=[{"type": "reasoning", "text": hidden}],
+            codex_message_items=[{"type": "message", "content": [{"text": hidden}]}],
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        payload = json.dumps(conv[0], ensure_ascii=False)
+
+        assert "hidden recalled lesson" not in payload
+        assert "experience-memory-context" not in payload
+        assert "before" in conv[0]["reasoning"]
+        assert "after" in conv[0]["reasoning"]
+        assert conv[0]["reasoning_details"][0]["safe"] == "kept"
+
+
+    def test_replayed_structured_content_strips_internal_context_blocks(self, db):
+        db.create_session(session_id="s1", source="cli")
+        hidden = "<experience-memory-context>\nhidden recalled lesson\n</experience-memory-context>"
+        db.append_message(
+            "s1",
+            role="user",
+            content=[
+                {"type": "text", "text": f"Visible question\n{hidden}"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+            ],
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        payload = json.dumps(conv[0], ensure_ascii=False)
+
+        assert "hidden recalled lesson" not in payload
+        assert "experience-memory-context" not in payload
+        assert "Visible question" in payload
+        assert "https://example.com/a.png" in payload
+
+
+    def test_restored_tool_calls_strip_internal_context_blocks(self, db):
+        db.create_session(session_id="s1", source="cli")
+        hidden_args = (
+            '{"command":"echo <experience-memory-context>\\n'
+            'hidden recalled lesson\\n</experience-memory-context> visible"}'
+        )
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="",
+            tool_calls=[{"id": "call_1", "type": "function", "function": {"name": "terminal", "arguments": hidden_args}}],
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        args = conv[0]["tool_calls"][0]["function"]["arguments"]
+
+        assert "hidden recalled lesson" not in args
+        assert "experience-memory-context" not in args
+        assert "visible" in args
+
+
+    def test_raw_session_history_helpers_strip_internal_context_blocks(self, db):
+        db.create_session(session_id="s1", source="cli")
+        hidden = "Visible\n<experience-memory-context>\nhidden recalled lesson\n</experience-memory-context>"
+        first_id = db.append_message("s1", role="user", content=hidden)
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="ok",
+            reasoning="<experience-memory-context>\nhidden reasoning\n</experience-memory-context>",
+            reasoning_content="<experience-memory-context>\nhidden native reasoning\n</experience-memory-context>",
+            reasoning_details=[{"text": "<experience-memory-context>\nhidden details\n</experience-memory-context>"}],
+            codex_reasoning_items=[{"text": "<experience-memory-context>\nhidden codex reasoning\n</experience-memory-context>"}],
+            codex_message_items=[{"content": [{"text": "<experience-memory-context>\nhidden codex message\n</experience-memory-context>"}]}],
+        )
+
+        all_messages = db.get_messages("s1")
+        around = db.get_messages_around("s1", first_id, window=1)["window"]
+        anchored = db.get_anchored_view("s1", first_id, window=1, bookend=1)["window"]
+
+        for payload in (all_messages, around, anchored):
+            text = json.dumps(payload, ensure_ascii=False)
+            assert "hidden" not in text
+            assert "experience-memory-context" not in text
+            assert "Visible" in text
+
+
 # =========================================================================
 # FTS5 search
 # =========================================================================
 
 class TestFTS5Search:
+    def test_search_snippet_strips_internal_context_blocks(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="user",
+            content="Visible <experience-memory-context>\nhidden search needle\n</experience-memory-context>",
+        )
+
+        results = db.search_messages("hidden search needle")
+
+        assert results
+        payload = json.dumps(results, ensure_ascii=False)
+        assert "hidden search needle" not in payload
+        assert "experience-memory-context" not in payload
+        assert "Visible" in payload or results[0].get("snippet", "") == ""
+
     def test_search_finds_content(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="How do I deploy with Docker?")

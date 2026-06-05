@@ -29,6 +29,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
+from agent.memory_manager import sanitize_context_payload
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
@@ -836,7 +837,9 @@ def handle_function_call(
         Function result as a JSON string.
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
+    function_args = sanitize_context_payload(function_args)
     function_args = coerce_tool_args(function_name, function_args)
+    function_args = sanitize_context_payload(function_args)
 
     if function_name == "experience_memory":
         return json.dumps(

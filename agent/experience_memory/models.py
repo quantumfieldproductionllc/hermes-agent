@@ -53,6 +53,7 @@ class ExperienceScope:
     chat_scope_hash: str = ""
     thread_scope_hash: str = ""
     gateway_session_hash: str = ""
+    session_lineage: tuple[str, ...] = ()
 
 
 @dataclass

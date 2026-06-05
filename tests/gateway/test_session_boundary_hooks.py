@@ -1,5 +1,6 @@
 """Tests that on_session_finalize and on_session_reset plugin hooks fire in the gateway."""
 from datetime import datetime
+from threading import Lock
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -71,6 +72,25 @@ def _make_runner():
     runner._format_session_info = lambda: ""
 
     return runner
+
+
+def test_fresh_session_state_clear_evicts_cached_agent_and_overrides():
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    session_key = build_session_key(_make_source())
+    runner._session_model_overrides = {session_key: {"model": "old"}}
+    runner._pending_model_notes = {session_key: "old note"}
+    runner._session_reasoning_overrides = {session_key: {"effort": "high"}}
+    runner._agent_cache = {session_key: (object(), "sig")}
+    runner._agent_cache_lock = Lock()
+
+    runner._clear_fresh_session_transient_state(session_key)
+
+    assert session_key not in runner._session_model_overrides
+    assert session_key not in runner._pending_model_notes
+    assert session_key not in runner._session_reasoning_overrides
+    assert session_key not in runner._agent_cache
 
 
 @pytest.mark.asyncio

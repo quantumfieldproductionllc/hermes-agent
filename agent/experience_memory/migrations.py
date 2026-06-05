@@ -25,6 +25,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     """
     try:
         conn.executescript(script)
+        _ensure_experience_records_columns(conn)
         _migrate_event_idempotency_keys(conn)
         conn.execute(
             """
@@ -41,6 +42,16 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         except sqlite3.Error:
             pass
         raise
+
+
+def _ensure_experience_records_columns(conn: sqlite3.Connection) -> None:
+    """Backfill additive columns for existing MVP-era databases."""
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(experience_records)").fetchall()
+    }
+    if "superseded_by" not in columns:
+        conn.execute("ALTER TABLE experience_records ADD COLUMN superseded_by TEXT")
 
 
 def _safe_idempotency_key(profile_id: str, salt: str, raw: str) -> str:

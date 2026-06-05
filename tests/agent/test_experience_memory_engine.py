@@ -82,6 +82,67 @@ def test_tool_schema_exposes_one_dynamic_tool(tmp_path):
         engine.shutdown()
 
 
+def test_engine_session_switch_updates_scope(tmp_path):
+    engine = _engine(tmp_path)
+    try:
+        engine.on_session_switch(
+            "session-2",
+            parent_session_id="session-1",
+            reset=False,
+            reason="compression",
+        )
+
+        assert engine.scope.session_id == "session-2"
+        assert engine.scope.parent_session_id == "session-1"
+        assert engine.scope.session_lineage == ("session-1",)
+
+        engine.on_session_switch("session-3", parent_session_id="session-2", reset=True)
+
+        assert engine.scope.session_id == "session-3"
+        assert engine.scope.parent_session_id == ""
+        assert engine.scope.session_lineage == ()
+    finally:
+        engine.shutdown()
+
+
+def test_session_scoped_recall_includes_lineage_after_non_reset_rotation(tmp_path):
+    engine = _engine(tmp_path, platform="gateway")
+    try:
+        assert engine.scope.scope_level == "session"
+        created = json.loads(
+            engine.handle_tool_call(
+                "experience_memory",
+                {
+                    "action": "record",
+                    "kind": "case",
+                    "title": "Before compression",
+                    "body": "pre-compression-lineage-needle",
+                },
+            )
+        )
+        assert created["ok"] is True
+
+        engine.on_session_switch("session-2", parent_session_id="session-1", reset=False)
+        recall = json.loads(
+            engine.handle_tool_call(
+                "experience_memory",
+                {"action": "recall", "query": "pre-compression-lineage-needle"},
+            )
+        )
+        assert [item["record_id"] for item in recall["results"]] == [created["record_id"]]
+
+        engine.on_session_switch("session-3", parent_session_id="session-2", reset=True)
+        reset_recall = json.loads(
+            engine.handle_tool_call(
+                "experience_memory",
+                {"action": "recall", "query": "pre-compression-lineage-needle"},
+            )
+        )
+        assert reset_recall["results"] == []
+    finally:
+        engine.shutdown()
+
+
 def test_status_record_recall_and_retract_return_json(tmp_path):
     engine = _engine(tmp_path)
     try:

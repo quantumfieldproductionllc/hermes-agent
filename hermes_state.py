@@ -23,7 +23,7 @@ import threading
 import time
 from pathlib import Path
 
-from agent.memory_manager import sanitize_context
+from agent.memory_manager import sanitize_context, sanitize_context_payload
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
@@ -1615,6 +1615,41 @@ class SessionDB:
                 return content
         return content
 
+    @classmethod
+    def _decode_visible_content(cls, role: str, content: Any) -> Any:
+        """Decode message content and strip internal context fences for visible roles."""
+        decoded = cls._decode_content(content)
+        if role in {"user", "assistant"}:
+            if isinstance(decoded, str):
+                return sanitize_context(decoded).strip()
+            return sanitize_context_payload(decoded)
+        return decoded
+
+    @classmethod
+    def _sanitize_message_dict(cls, msg: Dict[str, Any]) -> Dict[str, Any]:
+        """Scrub hidden internal context from raw message/history row dicts."""
+        if "content" in msg:
+            msg["content"] = cls._decode_visible_content(msg.get("role", ""), msg["content"])
+        if msg.get("tool_calls"):
+            try:
+                raw_tool_calls = msg["tool_calls"]
+                if isinstance(raw_tool_calls, str):
+                    raw_tool_calls = json.loads(raw_tool_calls)
+                msg["tool_calls"] = sanitize_context_payload(raw_tool_calls)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Failed to deserialize tool_calls in message row, falling back to []")
+                msg["tool_calls"] = []
+        for field in (
+            "reasoning",
+            "reasoning_content",
+            "reasoning_details",
+            "codex_reasoning_items",
+            "codex_message_items",
+        ):
+            if field in msg and msg[field] is not None:
+                msg[field] = sanitize_context_payload(msg[field])
+        return msg
+
     def append_message(
         self,
         session_id: str,
@@ -1658,7 +1693,7 @@ class SessionDB:
             json.dumps(codex_message_items)
             if codex_message_items else None
         )
-        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        tool_calls_json = json.dumps(sanitize_context_payload(tool_calls)) if tool_calls else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
@@ -1752,7 +1787,7 @@ class SessionDB:
                 codex_message_items_json = (
                     json.dumps(codex_message_items) if codex_message_items else None
                 )
-                tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+                tool_calls_json = json.dumps(sanitize_context_payload(tool_calls)) if tool_calls else None
                 # Accept either `platform_message_id` (new explicit name) or
                 # `message_id` (yuanbao's existing convention on message dicts).
                 platform_msg_id = (
@@ -1808,15 +1843,7 @@ class SessionDB:
             rows = cursor.fetchall()
         result = []
         for row in rows:
-            msg = dict(row)
-            if "content" in msg:
-                msg["content"] = self._decode_content(msg["content"])
-            if msg.get("tool_calls"):
-                try:
-                    msg["tool_calls"] = json.loads(msg["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
-                    msg["tool_calls"] = []
+            msg = self._sanitize_message_dict(dict(row))
             result.append(msg)
         return result
 
@@ -1875,17 +1902,7 @@ class SessionDB:
         rows = list(reversed(before_rows)) + list(after_rows)
         result = []
         for row in rows:
-            msg = dict(row)
-            if "content" in msg:
-                msg["content"] = self._decode_content(msg["content"])
-            if msg.get("tool_calls"):
-                try:
-                    msg["tool_calls"] = json.loads(msg["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning(
-                        "Failed to deserialize tool_calls in get_messages_around, falling back to []"
-                    )
-                    msg["tool_calls"] = []
+            msg = self._sanitize_message_dict(dict(row))
             result.append(msg)
 
         # before_rows includes the anchor itself; subtract 1 for the count of
@@ -1997,18 +2014,7 @@ class SessionDB:
                 bookend_end_rows = list(reversed(bookend_end_rows))
 
         def _hydrate(row) -> Dict[str, Any]:
-            msg = dict(row)
-            if "content" in msg:
-                msg["content"] = self._decode_content(msg["content"])
-            if msg.get("tool_calls"):
-                try:
-                    msg["tool_calls"] = json.loads(msg["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning(
-                        "Failed to deserialize tool_calls in get_anchored_view, falling back to []"
-                    )
-                    msg["tool_calls"] = []
-            return msg
+            return self._sanitize_message_dict(dict(row))
 
         return {
             "window": filtered_window,
@@ -2106,9 +2112,7 @@ class SessionDB:
 
         messages = []
         for row in rows:
-            content = self._decode_content(row["content"])
-            if row["role"] in {"user", "assistant"} and isinstance(content, str):
-                content = sanitize_context(content).strip()
+            content = self._decode_visible_content(row["role"], row["content"])
             msg = {"role": row["role"], "content": content}
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
@@ -2116,7 +2120,7 @@ class SessionDB:
                 msg["tool_name"] = row["tool_name"]
             if row["tool_calls"]:
                 try:
-                    msg["tool_calls"] = json.loads(row["tool_calls"])
+                    msg["tool_calls"] = sanitize_context_payload(json.loads(row["tool_calls"]))
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
                     msg["tool_calls"] = []
@@ -2136,24 +2140,24 @@ class SessionDB:
                 if row["finish_reason"]:
                     msg["finish_reason"] = row["finish_reason"]
                 if row["reasoning"]:
-                    msg["reasoning"] = row["reasoning"]
+                    msg["reasoning"] = sanitize_context(row["reasoning"])
                 if row["reasoning_content"] is not None:
-                    msg["reasoning_content"] = row["reasoning_content"]
+                    msg["reasoning_content"] = sanitize_context(row["reasoning_content"])
                 if row["reasoning_details"]:
                     try:
-                        msg["reasoning_details"] = json.loads(row["reasoning_details"])
+                        msg["reasoning_details"] = sanitize_context_payload(json.loads(row["reasoning_details"]))
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("Failed to deserialize reasoning_details, falling back to None")
                         msg["reasoning_details"] = None
                 if row["codex_reasoning_items"]:
                     try:
-                        msg["codex_reasoning_items"] = json.loads(row["codex_reasoning_items"])
+                        msg["codex_reasoning_items"] = sanitize_context_payload(json.loads(row["codex_reasoning_items"]))
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("Failed to deserialize codex_reasoning_items, falling back to None")
                         msg["codex_reasoning_items"] = None
                 if row["codex_message_items"]:
                     try:
-                        msg["codex_message_items"] = json.loads(row["codex_message_items"])
+                        msg["codex_message_items"] = sanitize_context_payload(json.loads(row["codex_message_items"]))
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("Failed to deserialize codex_message_items, falling back to None")
                         msg["codex_message_items"] = None
@@ -2559,7 +2563,7 @@ class SessionDB:
                     context_msgs = []
                     for r in ctx_cursor.fetchall():
                         raw = r["content"]
-                        decoded = self._decode_content(raw)
+                        decoded = self._decode_visible_content(r["role"], raw)
                         # Multimodal context: render a compact text-only
                         # summary for search previews.
                         if isinstance(decoded, list):
@@ -2582,6 +2586,8 @@ class SessionDB:
 
         # Remove full content from result (snippet is enough, saves tokens)
         for match in matches:
+            if isinstance(match.get("snippet"), str):
+                match["snippet"] = sanitize_context(match["snippet"])
             match.pop("content", None)
 
         return matches

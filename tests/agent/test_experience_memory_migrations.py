@@ -72,6 +72,25 @@ def test_migration_failure_rolls_back_partial_schema(tmp_path, monkeypatch):
         conn.close()
 
 
+def test_legacy_schema_without_superseded_by_is_upgraded(tmp_path):
+    conn = sqlite3.connect(tmp_path / "legacy.db")
+    legacy_sql = "\n".join(
+        line
+        for line in migrations.SCHEMA_SQL.splitlines()
+        if "superseded_by TEXT" not in line
+    )
+    try:
+        conn.executescript(legacy_sql)
+        conn.commit()
+
+        migrations.apply_migrations(conn)
+
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(experience_records)")]
+        assert "superseded_by" in columns
+    finally:
+        conn.close()
+
+
 def test_wal_fallback_result_is_reported(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "agent.experience_memory.store.apply_wal_with_fallback",

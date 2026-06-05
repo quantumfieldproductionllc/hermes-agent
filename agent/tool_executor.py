@@ -28,6 +28,7 @@ from agent.display import (
     get_tool_emoji as _get_tool_emoji,
     _detect_tool_failure,
 )
+from agent.memory_manager import sanitize_context, sanitize_context_payload
 from agent.tool_guardrails import ToolGuardrailDecision
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
@@ -138,10 +139,16 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         elif function_name == "skill_manage":
             agent._iters_since_skill = 0
 
+        raw_arguments = sanitize_context(getattr(tool_call.function, "arguments", "{}"))
         try:
-            function_args = json.loads(tool_call.function.arguments)
+            tool_call.function.arguments = raw_arguments
+        except Exception:
+            pass
+        try:
+            function_args = json.loads(raw_arguments)
         except json.JSONDecodeError:
             function_args = {}
+        function_args = sanitize_context_payload(function_args)
         if not isinstance(function_args, dict):
             function_args = {}
 
@@ -552,11 +559,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         function_name = tool_call.function.name
 
+        raw_arguments = sanitize_context(getattr(tool_call.function, "arguments", "{}"))
         try:
-            function_args = json.loads(tool_call.function.arguments)
+            tool_call.function.arguments = raw_arguments
+        except Exception:
+            pass
+        try:
+            function_args = json.loads(raw_arguments)
         except json.JSONDecodeError as e:
             logger.warning(f"Unexpected JSON error after validation: {e}")
             function_args = {}
+        function_args = sanitize_context_payload(function_args)
         if not isinstance(function_args, dict):
             function_args = {}
 

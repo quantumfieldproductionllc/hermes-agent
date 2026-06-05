@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock
 
+from agent.memory_manager import StreamingContextScrubber
 from run_agent import AIAgent
 
 
@@ -9,6 +10,51 @@ def _bare_agent():
     agent.session_id = "session-1"
     agent._user_turn_count = 4
     return agent
+
+
+def test_experience_memory_session_switch_notifies_engine():
+    agent = _bare_agent()
+
+    agent._notify_experience_memory_session_switch(
+        "session-2",
+        parent_session_id="session-1",
+        reset=False,
+        reason="compression",
+    )
+
+    agent._experience_memory.on_session_switch.assert_called_once_with(
+        "session-2",
+        parent_session_id="session-1",
+        session_lineage=(),
+        reset=False,
+        reason="compression",
+    )
+
+
+def test_experience_memory_session_switch_fail_open_when_engine_missing_or_raises():
+    agent = _bare_agent()
+    agent._experience_memory.on_session_switch.side_effect = RuntimeError("closed")
+
+    agent._notify_experience_memory_session_switch("session-2")
+
+    agent._experience_memory = None
+    agent._notify_experience_memory_session_switch("session-3")
+
+
+def test_reasoning_delta_scrubs_split_experience_memory_context():
+    agent = AIAgent.__new__(AIAgent)
+    delivered = []
+    agent.reasoning_callback = delivered.append
+    agent._stream_reasoning_context_scrubber = StreamingContextScrubber()
+
+    agent._fire_reasoning_delta("thinking\n<experience-memory")
+    agent._fire_reasoning_delta("-context>\nhidden lesson")
+    agent._fire_reasoning_delta("</experience-memory-context>\nvisible reasoning")
+
+    joined = "".join(delivered)
+    assert "hidden lesson" not in joined
+    assert "experience-memory-context" not in joined
+    assert "visible reasoning" in joined
 
 
 def test_experience_memory_sync_completed_turn_calls_engine():

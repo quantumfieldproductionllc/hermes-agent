@@ -95,6 +95,44 @@ def agent_with_memory_tool():
         return a
 
 
+def test_experience_memory_dynamic_tool_schema_is_strict_backend_sanitized():
+    """Dynamic EME tools must pass through the same sanitizer as registry tools."""
+    cfg = {
+        "memory": {"memory_enabled": False, "user_profile_enabled": False},
+        "experience_memory": {
+            "enabled": True,
+            "mode": "shadow",
+            "tools_enabled": True,
+        },
+    }
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        a = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://chatgpt.com/backend-api/codex",
+            provider="openai-codex",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+        )
+
+    eme_tool = next(
+        tool for tool in a.tools
+        if tool.get("function", {}).get("name") == "experience_memory"
+    )
+    params = eme_tool["function"]["parameters"]
+
+    assert "experience_memory" in a.valid_tool_names
+    assert "experience_memory" in a._experience_memory_tool_names
+    assert params["type"] == "object"
+    assert "properties" in params
+    assert not ({"allOf", "anyOf", "oneOf", "enum", "not"} & set(params))
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()
@@ -254,6 +292,31 @@ def _mock_response(
 # ===================================================================
 # Group 1: Pure Functions
 # ===================================================================
+
+
+class TestApiErrorSanitization:
+    def test_summarize_api_error_strips_hidden_experience_memory_context(self):
+        from run_agent import AIAgent
+
+        err = RuntimeError(
+            "provider echoed <experience-memory-context>\nhidden recalled lesson\n</experience-memory-context> after reject"
+        )
+
+        summary = AIAgent._summarize_api_error(err)
+
+        assert "hidden recalled lesson" not in summary
+        assert "experience-memory-context" not in summary
+        assert "provider echoed" in summary
+
+    def test_clean_error_message_strips_hidden_experience_memory_context(self, agent):
+        cleaned = agent._clean_error_message(
+            "bad request <experience-memory-context>\nhidden recalled lesson\n</experience-memory-context> visible"
+        )
+
+        assert "hidden recalled lesson" not in cleaned
+        assert "experience-memory-context" not in cleaned
+        assert "bad request" in cleaned
+        assert "visible" in cleaned
 
 
 class TestHasContentAfterThinkBlock:
@@ -1866,6 +1929,25 @@ class TestBuildAssistantMessage:
         assert len(result["tool_calls"]) == 1
         assert result["tool_calls"][0]["function"]["name"] == "web_search"
 
+    def test_tool_call_arguments_strip_hidden_experience_memory_context(self, agent):
+        tc = _mock_tool_call(
+            name="terminal",
+            arguments=(
+                '{"command":"echo start <experience-memory-context>\\n'
+                'hidden recalled lesson\\n</experience-memory-context> end"}'
+            ),
+            call_id="c1",
+        )
+        msg = _mock_assistant_msg(content="", tool_calls=[tc])
+
+        result = agent._build_assistant_message(msg, "tool_calls")
+        args = result["tool_calls"][0]["function"]["arguments"]
+
+        assert "hidden recalled lesson" not in args
+        assert "experience-memory-context" not in args
+        assert "echo start" in args
+        assert "end" in args
+
     def test_with_reasoning_details(self, agent):
         details = [{"type": "reasoning.summary", "text": "step1", "signature": "sig1"}]
         msg = _mock_assistant_msg(content="ans", reasoning_details=details)
@@ -1993,7 +2075,8 @@ class TestBuildAssistantMessage:
         )
         msg = _mock_assistant_msg(content=original)
         result = agent._build_assistant_message(msg, "stop")
-        assert "<memory-context>" in result["content"]
+        assert "<memory-context>" not in result["content"]
+        assert "stale memory" not in result["content"]
         assert "Visible answer" in result["content"]
 
     def test_unterminated_think_block_stripped(self, agent):
@@ -2879,6 +2962,63 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_stop_finish_reason_sanitizes_experience_memory_echo_before_callbacks(self, agent):
+        self._setup_agent(agent)
+        leaked = (
+            "Intro\n"
+            "<experience-memory-context>\nhidden recalled lesson\n</experience-memory-context>\n"
+            "Visible answer"
+        )
+        resp = _mock_response(
+            content=leaked,
+            finish_reason="stop",
+            reasoning="<experience-memory-context>\nhidden reasoning\n</experience-memory-context>",
+            reasoning_content="<experience-memory-context>\nhidden native reasoning\n</experience-memory-context>",
+        )
+        agent.client.chat.completions.create.return_value = resp
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            return []
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Intro\n\nVisible answer"
+        assert "hidden recalled lesson" not in result["final_response"]
+        post_calls = [kw for name, kw in hook_calls if name == "post_api_request"]
+        assert post_calls
+        assert "hidden recalled lesson" not in post_calls[0]["assistant_message"].content
+        assert "hidden reasoning" not in str(getattr(post_calls[0]["assistant_message"], "reasoning", ""))
+        assert "hidden native reasoning" not in str(getattr(post_calls[0]["assistant_message"], "reasoning_content", ""))
+        assert post_calls[0]["response"] is None
+
+    def test_length_continuation_sanitizes_truncated_experience_memory_echo(self, agent):
+        self._setup_agent(agent)
+        partial = (
+            "Intro\n"
+            "<experience-memory-context>\nhidden truncated lesson\n</experience-memory-context>\n"
+        )
+        first = _mock_response(content=partial, finish_reason="length")
+        second = _mock_response(content="Visible tail", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [first, second]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Intro\n\nVisible tail"
+        assert "hidden truncated lesson" not in result["final_response"]
 
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)

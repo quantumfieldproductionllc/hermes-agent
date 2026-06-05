@@ -140,6 +140,45 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_call_suppressed_content_uses_context_scrubber(self, mock_close, mock_create):
+        """Content deltas after tool_call deltas must not bypass scrubbers."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_123", name="terminal")
+            ]),
+            _make_stream_chunk(content="<experience-memory-context>\nhidden stream lesson\n</experience-memory-context>"),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"command": "ls"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        delivered = []
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda text: delivered.append(text),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content
+        assert "hidden stream lesson" not in "".join(str(item) for item in delivered)
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_tool_name_not_duplicated_when_resent_per_chunk(self, mock_close, mock_create):
         """MiniMax M2.7 via NVIDIA NIM resends the full name in every chunk.
 

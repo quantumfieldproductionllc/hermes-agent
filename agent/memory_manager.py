@@ -40,9 +40,15 @@ logger = logging.getLogger(__name__)
 # Context fencing helpers
 # ---------------------------------------------------------------------------
 
-_FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
+_CONTEXT_TAG_NAMES = ("memory-context", "experience-memory-context")
+_CONTEXT_TAG_PATTERN = "(?:" + "|".join(re.escape(tag) for tag in _CONTEXT_TAG_NAMES) + ")"
+_FENCE_TAG_RE = re.compile(rf'</?\s*{_CONTEXT_TAG_PATTERN}\s*>', re.IGNORECASE)
 _INTERNAL_CONTEXT_RE = re.compile(
-    r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>',
+    rf'<\s*(?P<tag>{_CONTEXT_TAG_PATTERN})\s*>[\s\S]*?</\s*(?P=tag)\s*>',
+    re.IGNORECASE,
+)
+_UNTERMINATED_INTERNAL_CONTEXT_RE = re.compile(
+    rf'<\s*{_CONTEXT_TAG_PATTERN}\s*>[\s\S]*\Z',
     re.IGNORECASE,
 )
 _INTERNAL_NOTE_RE = re.compile(
@@ -54,9 +60,73 @@ _INTERNAL_NOTE_RE = re.compile(
 def sanitize_context(text: str) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output."""
     text = _INTERNAL_CONTEXT_RE.sub('', text)
+    text = _UNTERMINATED_INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
     return text
+
+
+def sanitize_context_payload(value):
+    """Recursively strip internal context fences from strings in a payload."""
+    if isinstance(value, str):
+        return sanitize_context(value)
+    if isinstance(value, list):
+        return [sanitize_context_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return [sanitize_context_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {key: sanitize_context_payload(item) for key, item in value.items()}
+    return value
+
+
+def sanitize_tool_call_arguments_in_place(tool_calls) -> None:
+    """Strip internal context fences from tool-call argument strings in-place when possible."""
+    if not isinstance(tool_calls, list):
+        return
+    for tool_call in tool_calls:
+        function = getattr(tool_call, "function", None)
+        if function is None and isinstance(tool_call, dict):
+            function = tool_call.get("function")
+        if function is None:
+            continue
+        if isinstance(function, dict):
+            if "arguments" in function:
+                function["arguments"] = sanitize_context_payload(function.get("arguments"))
+            continue
+        try:
+            arguments = getattr(function, "arguments")
+        except Exception:
+            continue
+        sanitized = sanitize_context_payload(arguments)
+        try:
+            setattr(function, "arguments", sanitized)
+        except Exception:
+            # Some SDK response objects are immutable; callers that execute or
+            # persist them must still sanitize at their own serialization edge.
+            pass
+
+
+def sanitized_tool_calls_payload(tool_calls):
+    """Return a JSON-like sanitized representation for hooks/log-only payloads."""
+    if not isinstance(tool_calls, list):
+        return []
+    payload = []
+    for tool_call in tool_calls:
+        function = getattr(tool_call, "function", None)
+        if function is None and isinstance(tool_call, dict):
+            function = tool_call.get("function") or {}
+        if isinstance(function, dict):
+            fn_name = function.get("name")
+            fn_args = function.get("arguments")
+        else:
+            fn_name = getattr(function, "name", None)
+            fn_args = getattr(function, "arguments", None)
+        payload.append(sanitize_context_payload({
+            "id": getattr(tool_call, "id", None) if not isinstance(tool_call, dict) else tool_call.get("id"),
+            "type": getattr(tool_call, "type", None) if not isinstance(tool_call, dict) else tool_call.get("type"),
+            "function": {"name": fn_name, "arguments": fn_args},
+        }))
+    return payload
 
 
 class StreamingContextScrubber:
@@ -85,16 +155,17 @@ class StreamingContextScrubber:
     ``reset()``.
     """
 
-    _OPEN_TAG = "<memory-context>"
-    _CLOSE_TAG = "</memory-context>"
+    _CONTEXT_TAGS = tuple((f"<{tag}>", f"</{tag}>") for tag in _CONTEXT_TAG_NAMES)
 
     def __init__(self) -> None:
         self._in_span: bool = False
+        self._close_tag: str = ""
         self._buf: str = ""
         self._at_block_boundary: bool = True
 
     def reset(self) -> None:
         self._in_span = False
+        self._close_tag = ""
         self._buf = ""
         self._at_block_boundary = True
 
@@ -113,34 +184,35 @@ class StreamingContextScrubber:
 
         while buf:
             if self._in_span:
-                idx = buf.lower().find(self._CLOSE_TAG)
+                close_tag = self._close_tag or "</memory-context>"
+                idx = buf.lower().find(close_tag)
                 if idx == -1:
                     # Hold back a potential partial close tag; drop the rest
-                    held = self._max_partial_suffix(buf, self._CLOSE_TAG)
+                    held = self._max_partial_suffix(buf, close_tag)
                     self._buf = buf[-held:] if held else ""
                     return "".join(out)
                 # Found close — skip span content + tag, continue
-                buf = buf[idx + len(self._CLOSE_TAG):]
+                buf = buf[idx + len(close_tag):]
                 self._in_span = False
+                self._close_tag = ""
             else:
-                idx = self._find_boundary_open_tag(buf)
-                if idx == -1:
+                found = self._find_open_tag(buf)
+                if found is None:
                     # No open tag — hold back a potential partial open tag
-                    held = (
-                        self._max_pending_open_suffix(buf)
-                        or self._max_partial_suffix(buf, self._OPEN_TAG)
-                    )
+                    held = self._max_pending_open_suffix(buf) or self._max_partial_open_suffix(buf)
                     if held:
                         self._append_visible(out, buf[:-held])
                         self._buf = buf[-held:]
                     else:
                         self._append_visible(out, buf)
                     return "".join(out)
+                idx, open_tag, close_tag = found
                 # Emit text before the tag, enter span
                 if idx > 0:
                     self._append_visible(out, buf[:idx])
-                buf = buf[idx + len(self._OPEN_TAG):]
+                buf = buf[idx + len(open_tag):]
                 self._in_span = True
+                self._close_tag = close_tag
 
         return "".join(out)
 
@@ -155,6 +227,7 @@ class StreamingContextScrubber:
         if self._in_span:
             self._buf = ""
             self._in_span = False
+            self._close_tag = ""
             return ""
         tail = self._buf
         self._buf = ""
@@ -174,29 +247,38 @@ class StreamingContextScrubber:
                 return i
         return 0
 
-    def _find_boundary_open_tag(self, buf: str) -> int:
-        """Find an opening fence only when it starts a block-like span."""
+    def _find_open_tag(self, buf: str) -> tuple[int, str, str] | None:
+        """Find the earliest internal context opening fence followed by a block body."""
         buf_lower = buf.lower()
-        search_start = 0
-        while True:
-            idx = buf_lower.find(self._OPEN_TAG, search_start)
-            if idx == -1:
-                return -1
-            if self._is_block_boundary(buf, idx) and self._has_block_opener_suffix(buf, idx):
-                return idx
-            search_start = idx + 1
+        candidates: list[tuple[int, str, str]] = []
+        for open_tag, close_tag in self._CONTEXT_TAGS:
+            search_start = 0
+            while True:
+                idx = buf_lower.find(open_tag, search_start)
+                if idx == -1:
+                    break
+                if self._has_block_opener_suffix(buf, idx, open_tag):
+                    candidates.append((idx, open_tag, close_tag))
+                    break
+                search_start = idx + 1
+        if not candidates:
+            return None
+        return min(candidates, key=lambda item: item[0])
+
+    def _max_partial_open_suffix(self, buf: str) -> int:
+        return max((self._max_partial_suffix(buf, open_tag) for open_tag, _ in self._CONTEXT_TAGS), default=0)
 
     def _max_pending_open_suffix(self, buf: str) -> int:
         """Hold a complete boundary tag until the following char confirms it."""
-        if not buf.lower().endswith(self._OPEN_TAG):
-            return 0
-        idx = len(buf) - len(self._OPEN_TAG)
-        if not self._is_block_boundary(buf, idx):
-            return 0
-        return len(self._OPEN_TAG)
+        buf_lower = buf.lower()
+        for open_tag, _close_tag in self._CONTEXT_TAGS:
+            if not buf_lower.endswith(open_tag):
+                continue
+            return len(open_tag)
+        return 0
 
-    def _has_block_opener_suffix(self, buf: str, idx: int) -> bool:
-        after_idx = idx + len(self._OPEN_TAG)
+    def _has_block_opener_suffix(self, buf: str, idx: int, open_tag: str) -> bool:
+        after_idx = idx + len(open_tag)
         if after_idx >= len(buf):
             return False
         return buf[after_idx] in "\r\n"

@@ -25,6 +25,7 @@ import ssl
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -35,7 +36,13 @@ from agent.experience_memory.prompting import (
     extract_text_from_user_content,
 )
 from agent.iteration_budget import IterationBudget
-from agent.memory_manager import build_memory_context_block
+from agent.memory_manager import (
+    build_memory_context_block,
+    sanitize_context,
+    sanitize_context_payload,
+    sanitize_tool_call_arguments_in_place,
+    sanitized_tool_calls_payload,
+)
 from agent.message_sanitization import (
     _repair_tool_call_arguments,
     _sanitize_messages_non_ascii,
@@ -543,6 +550,9 @@ def run_conversation(
     think_scrubber = getattr(agent, "_stream_think_scrubber", None)
     if think_scrubber is not None:
         think_scrubber.reset()
+    reasoning_context_scrubber = getattr(agent, "_stream_reasoning_context_scrubber", None)
+    if reasoning_context_scrubber is not None:
+        reasoning_context_scrubber.reset()
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
@@ -1226,6 +1236,11 @@ def run_conversation(
                     # mutated by the agent loop, so a shallow copy is
                     # sufficient; a deepcopy would walk every tool result
                     # and base64 image on every API call.
+                    safe_request_messages = (
+                        sanitize_context_payload(list(request_messages))
+                        if isinstance(request_messages, list)
+                        else []
+                    )
                     _invoke_hook(
                         "pre_api_request",
                         task_id=effective_task_id,
@@ -1238,7 +1253,7 @@ def run_conversation(
                         base_url=agent.base_url,
                         api_mode=agent.api_mode,
                         api_call_count=api_call_count,
-                        request_messages=list(request_messages) if isinstance(request_messages, list) else [],
+                        request_messages=safe_request_messages,
                         message_count=len(api_messages),
                         tool_count=len(agent.tools or []),
                         approx_input_tokens=approx_tokens,
@@ -1675,7 +1690,7 @@ def run_conversation(
                             interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
                             messages.append(interim_msg)
                             if assistant_message.content:
-                                truncated_response_parts.append(assistant_message.content)
+                                truncated_response_parts.append(sanitize_context(assistant_message.content))
 
                             if length_continue_retries < 3:
                                 _is_partial_stream_stub = (
@@ -1717,7 +1732,7 @@ def run_conversation(
                                 restart_with_length_continuation = True
                                 break
 
-                            partial_response = agent._strip_think_blocks("".join(truncated_response_parts)).strip()
+                            partial_response = agent._strip_think_blocks(sanitize_context("".join(truncated_response_parts))).strip()
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             return {
@@ -3443,6 +3458,22 @@ def run_conversation(
                 else:
                     assistant_message.content = str(raw)
 
+            if assistant_message.content:
+                assistant_message.content = sanitize_context(assistant_message.content)
+            assistant_tool_calls_for_hooks = getattr(assistant_message, "tool_calls", None) or []
+            sanitize_tool_call_arguments_in_place(assistant_tool_calls_for_hooks)
+
+            _hook_assistant_message = SimpleNamespace(
+                content=assistant_message.content,
+                reasoning=sanitize_context_payload(getattr(assistant_message, "reasoning", None)),
+                reasoning_content=sanitize_context_payload(getattr(assistant_message, "reasoning_content", None)),
+                reasoning_details=sanitize_context_payload(getattr(assistant_message, "reasoning_details", None)),
+                codex_reasoning_items=sanitize_context_payload(getattr(assistant_message, "codex_reasoning_items", None)),
+                codex_message_items=sanitize_context_payload(getattr(assistant_message, "codex_message_items", None)),
+                tool_calls=sanitized_tool_calls_payload(assistant_tool_calls_for_hooks),
+                model_extra=sanitize_context_payload(getattr(assistant_message, "model_extra", None)),
+            )
+
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
@@ -3461,9 +3492,9 @@ def run_conversation(
                     finish_reason=finish_reason,
                     message_count=len(api_messages),
                     response_model=getattr(response, "model", None),
-                    response=response,
+                    response=None,
                     usage=agent._usage_summary_for_api_request_hook(response),
-                    assistant_message=assistant_message,
+                    assistant_message=_hook_assistant_message,
                     assistant_content_chars=len(_assistant_text),
                     assistant_tool_call_count=len(_assistant_tool_calls),
                 )
@@ -4228,7 +4259,7 @@ def run_conversation(
                     truncated_response_parts = []
                     length_continue_retries = 0
                 
-                final_response = agent._strip_think_blocks(final_response).strip()
+                final_response = agent._strip_think_blocks(sanitize_context(final_response)).strip()
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 

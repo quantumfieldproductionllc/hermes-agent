@@ -373,6 +373,7 @@ class AIAgent:
         skip_memory: bool = False,
         session_db=None,
         parent_session_id: str = None,
+        session_lineage: list[str] | tuple[str, ...] | None = None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
@@ -443,6 +444,7 @@ class AIAgent:
             skip_memory=skip_memory,
             session_db=session_db,
             parent_session_id=parent_session_id,
+            session_lineage=session_lineage,
             iteration_budget=iteration_budget,
             fallback_model=fallback_model,
             credential_pool=credential_pool,
@@ -1653,13 +1655,13 @@ class AIAgent:
         <title> tag instead of dumping raw HTML.  Falls back to a truncated
         str(error) for everything else.
         """
-        raw = str(error)
+        raw = sanitize_context(str(error))
 
         if (
             isinstance(error, ValueError)
             and "expected ident at line" in raw.lower()
         ):
-            return f"Malformed provider streaming response: {raw[:300]}"
+            return sanitize_context(f"Malformed provider streaming response: {raw[:300]}")
 
         # Cloudflare / proxy HTML pages: grab the <title> for a clean summary
         if "<!DOCTYPE" in raw or "<html" in raw:
@@ -1684,12 +1686,12 @@ class AIAgent:
             if msg:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
-                return f"{prefix}{msg[:300]}"
+                return sanitize_context(f"{prefix}{str(msg)[:300]}")
 
         # Fallback: truncate the raw string but give more room than 200 chars
         status_code = getattr(error, "status_code", None)
         prefix = f"HTTP {status_code}: " if status_code else ""
-        return f"{prefix}{raw[:500]}"
+        return sanitize_context(f"{prefix}{raw[:500]}")
 
     def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
         # Azure Foundry Entra ID bearer providers are callables — never
@@ -1715,6 +1717,10 @@ class AIAgent:
         if not error_msg:
             return "Unknown error"
             
+        # Remove hidden internal context before any provider error text is
+        # surfaced to users, logs, gateway status, or plugin callbacks.
+        error_msg = sanitize_context(str(error_msg))
+
         # Remove HTML content (common with CloudFlare and gateway error pages)
         if error_msg.strip().startswith('<!DOCTYPE html') or '<html' in error_msg:
             return "Service temporarily unavailable (HTML error page returned)"
@@ -2293,6 +2299,30 @@ class AIAgent:
                 )
             except Exception:
                 pass
+
+    def _notify_experience_memory_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        session_lineage: list[str] | tuple[str, ...] | None = None,
+        reset: bool = False,
+        reason: str = "",
+    ) -> None:
+        """Notify dynamic EME of a mid-process session id rotation."""
+        eme = getattr(self, "_experience_memory", None)
+        if not eme:
+            return
+        try:
+            eme.on_session_switch(
+                new_session_id or "",
+                parent_session_id=parent_session_id or "",
+                session_lineage=tuple(str(item) for item in (session_lineage or ()) if str(item or "")),
+                reset=reset,
+                reason=reason,
+            )
+        except Exception:
+            pass
 
     def _sync_external_memory_for_turn(
         self,
@@ -3442,7 +3472,13 @@ class AIAgent:
         cb = self.reasoning_callback
         if cb is not None:
             try:
-                cb(text)
+                scrubber = getattr(self, "_stream_reasoning_context_scrubber", None)
+                if scrubber is not None:
+                    text = scrubber.feed(text or "")
+                else:
+                    text = sanitize_context(text or "")
+                if text:
+                    cb(text)
             except Exception:
                 pass
 

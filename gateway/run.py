@@ -8656,10 +8656,7 @@ class GatewayRunner:
             # session-scoped transient state so the fresh session does not
             # inherit the previous conversation's model/reasoning overrides
             # or a queued "/model switched" note.
-            self._session_model_overrides.pop(session_key, None)
-            self._set_session_reasoning_override(session_key, None)
-            if hasattr(self, "_pending_model_notes"):
-                self._pending_model_notes.pop(session_key, None)
+            self._clear_fresh_session_transient_state(session_key)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -15860,6 +15857,14 @@ class GatewayRunner:
         if release_running_state:
             self._release_running_agent_state(session_key)
 
+    def _clear_fresh_session_transient_state(self, session_key: str) -> None:
+        """Drop per-session state that must not cross a reset boundary."""
+        self._session_model_overrides.pop(session_key, None)
+        self._set_session_reasoning_override(session_key, None)
+        self._evict_cached_agent(session_key)
+        if hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes.pop(session_key, None)
+
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc)."""
         _lock = getattr(self, "_agent_cache_lock", None)
@@ -17231,6 +17236,18 @@ class GatewayRunner:
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
+                _parent_session_id = None
+                _session_lineage = []
+                try:
+                    if self._session_db and session_id:
+                        _meta = self._session_db.get_session(session_id) or {}
+                        _parent_session_id = _meta.get("parent_session_id") or None
+                        if hasattr(self._session_db, "_session_lineage_root_to_tip"):
+                            _chain = self._session_db._session_lineage_root_to_tip(session_id)
+                            _session_lineage = [sid for sid in _chain if sid and sid != session_id]
+                except Exception:
+                    _parent_session_id = None
+                    _session_lineage = []
                 # Config changed or first message — create fresh agent
                 agent = AIAgent(
                     model=turn_route["model"],
@@ -17262,6 +17279,8 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
                     session_db=self._session_db,
+                    parent_session_id=_parent_session_id,
+                    session_lineage=_session_lineage,
                     fallback_model=self._fallback_model,
                 )
                 if _cache_lock and _cache is not None:

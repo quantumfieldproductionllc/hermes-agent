@@ -804,6 +804,10 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             combined = "\n\n".join(b.strip() for b in think_blocks if b.strip())
             reasoning_text = combined or None
 
+    if reasoning_text:
+        from agent.memory_manager import sanitize_context
+        reasoning_text = sanitize_context(str(reasoning_text))
+
     if reasoning_text and agent.verbose_logging:
         logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {reasoning_text}")
 
@@ -842,6 +846,9 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # compression, title generation.
     if isinstance(_san_content, str) and _san_content:
         _san_content = agent._strip_think_blocks(_san_content).strip()
+        if "<experience-memory-context" in _san_content.lower() or "<memory-context" in _san_content.lower():
+            from agent.memory_manager import sanitize_context
+            _san_content = sanitize_context(_san_content).strip()
 
     # Defence-in-depth: redact credentials (PATs, API keys, Bearer tokens)
     # from assistant content BEFORE the message enters conversation history.
@@ -867,7 +874,8 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
             raw_reasoning_content = model_extra["reasoning_content"]
     if raw_reasoning_content is not None:
-        msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
+        from agent.memory_manager import sanitize_context_payload
+        msg["reasoning_content"] = sanitize_context_payload(_sanitize_surrogates(raw_reasoning_content))
     elif assistant_tool_calls and agent._needs_thinking_reasoning_pad():
         # DeepSeek v4 thinking mode and Kimi / Moonshot thinking mode
         # both require reasoning_content on every assistant tool-call
@@ -922,20 +930,23 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             elif hasattr(d, "model_dump"):
                 preserved.append(d.model_dump())
         if preserved:
-            msg["reasoning_details"] = preserved
+            from agent.memory_manager import sanitize_context_payload
+            msg["reasoning_details"] = sanitize_context_payload(preserved)
 
     # Codex Responses API: preserve encrypted reasoning items for
     # multi-turn continuity. These get replayed as input on the next turn.
     codex_items = getattr(assistant_message, "codex_reasoning_items", None)
     if codex_items:
-        msg["codex_reasoning_items"] = codex_items
+        from agent.memory_manager import sanitize_context_payload
+        msg["codex_reasoning_items"] = sanitize_context_payload(codex_items)
 
     # Codex Responses API: preserve exact assistant message items (with
     # id/phase) so follow-up turns can replay structured items instead of
     # flattening to plain text. This is required for prefix cache hits.
     codex_message_items = getattr(assistant_message, "codex_message_items", None)
     if codex_message_items:
-        msg["codex_message_items"] = codex_message_items
+        from agent.memory_manager import sanitize_context_payload
+        msg["codex_message_items"] = sanitize_context_payload(codex_message_items)
 
     if assistant_tool_calls:
         tool_calls = []
@@ -983,9 +994,10 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             # call (e.g. `terminal(command="curl -H 'Authorization: Bearer
             # sk-...'")`). (#19798)
             if isinstance(tc_dict["function"]["arguments"], str):
+                from agent.memory_manager import sanitize_context
                 from agent.redact import redact_sensitive_text
                 tc_dict["function"]["arguments"] = redact_sensitive_text(
-                    tc_dict["function"]["arguments"]
+                    sanitize_context(tc_dict["function"]["arguments"])
                 )
             # Preserve extra_content (e.g. Gemini thought_signature) so it
             # is sent back on subsequent API calls.  Without this, Gemini 3
@@ -1807,8 +1819,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # box is already closed (tool boundary flush).
                 elif agent.stream_delta_callback:
                     try:
-                        agent.stream_delta_callback(delta.content)
-                        agent._record_streamed_assistant_text(delta.content)
+                        agent._fire_stream_delta(delta.content)
                     except Exception:
                         pass
 

@@ -135,6 +135,31 @@ def test_multimodal_without_text_skips_experience_memory_prefetch(monkeypatch):
     assert result["messages"][0]["content"] is content
 
 
+def test_pre_api_request_hook_gets_sanitized_request_messages(monkeypatch):
+    agent = _make_agent()
+    block = "<experience-memory-context>\nhidden recalled lesson\n</experience-memory-context>"
+    engine = MagicMock()
+    engine.prefetch.return_value = block
+    agent._experience_memory = engine
+    hook_seen = {}
+
+    def _hook(name, **kwargs):
+        if name == "pre_api_request":
+            hook_seen["request_messages"] = kwargs.get("request_messages")
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _hook)
+
+    agent.run_conversation("Use prior local context")
+
+    provider_content = _user_message_from_request(agent)["content"]
+    hook_payload = str(hook_seen["request_messages"])
+    assert block in provider_content
+    assert "hidden recalled lesson" not in hook_payload
+    assert "experience-memory-context" not in hook_payload
+    assert "Use prior local context" in hook_payload
+
+
 def test_codex_app_server_skips_hidden_experience_memory_prefetch(monkeypatch):
     agent = _make_agent(api_mode="codex_app_server")
     engine = MagicMock()

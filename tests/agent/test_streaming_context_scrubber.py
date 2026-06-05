@@ -6,7 +6,17 @@ regex can't survive chunk boundaries, so _fire_stream_delta routes deltas
 through a stateful scrubber.
 """
 
-from agent.memory_manager import StreamingContextScrubber, sanitize_context
+from agent.memory_manager import StreamingContextScrubber, sanitize_context, sanitize_context_payload
+from agent.chat_completion_helpers import build_assistant_message
+
+
+def test_sanitize_context_strips_unterminated_experience_memory_blocks():
+    hidden = "before\n<experience-memory-context>\nhidden recalled lesson"
+
+    assert sanitize_context(hidden) == "before\n"
+    assert sanitize_context_payload([{"content": [{"text": hidden}]}]) == [
+        {"content": [{"text": "before\n"}]}
+    ]
 
 
 class TestStreamingContextScrubberBasics:
@@ -32,6 +42,18 @@ class TestStreamingContextScrubberBasics:
         )
         out = s.feed(leaked) + s.flush()
         assert out == "\n\nVisible answer"
+
+    def test_inline_experience_memory_block_is_scrubbed(self):
+        s = StreamingContextScrubber()
+        leaked = (
+            "Sure: <experience-memory-context>\n"
+            "hidden recalled lesson\n"
+            "</experience-memory-context> visible"
+        )
+        out = s.feed(leaked) + s.flush()
+        assert out == "Sure:  visible"
+        assert "hidden recalled lesson" not in out
+        assert "experience-memory-context" not in out
 
     def test_open_and_close_in_separate_deltas_strips_payload(self):
         """The real streaming case: tag pair split across deltas."""
@@ -100,6 +122,102 @@ class TestStreamingContextScrubberBasics:
         )
         assert out == "pre \n post"
         assert "leak" not in out
+
+
+    def test_experience_memory_block_in_fragmented_chunks_is_scrubbed(self):
+        s = StreamingContextScrubber()
+        deltas = [
+            "Intro\n<experience-memory",
+            "-context>\n[System note: recalled experience]\n",
+            "secret local lesson\n",
+            "</experience-memory-context>\nVisible answer",
+        ]
+        out = "".join(s.feed(d) for d in deltas) + s.flush()
+
+        assert out == "Intro\n\nVisible answer"
+        assert "secret local lesson" not in out
+        assert "experience-memory-context" not in out
+
+    def test_sanitize_context_strips_experience_memory_block(self):
+        leaked = (
+            "Before\n"
+            "<experience-memory-context>\n"
+            "private experience\n"
+            "</experience-memory-context>\n"
+            "After"
+        )
+
+        out = sanitize_context(leaked)
+
+        assert out == "Before\n\nAfter"
+        assert "private experience" not in out
+
+    def test_non_streamed_assistant_storage_strips_experience_memory_block(self):
+        class Agent:
+            verbose_logging = False
+            reasoning_callback = None
+            stream_delta_callback = None
+            _stream_callback = None
+
+            def _extract_reasoning(self, assistant_message):
+                return None
+
+            def _strip_think_blocks(self, text):
+                return text
+
+            def _needs_thinking_reasoning_pad(self):
+                return False
+
+        class Message:
+            content = (
+                "<experience-memory-context>\n"
+                "hidden recalled lesson\n"
+                "</experience-memory-context>\n"
+                "Visible answer"
+            )
+            tool_calls = None
+            reasoning_content = None
+
+        result = build_assistant_message(Agent(), Message(), "stop")
+
+        assert result["content"] == "Visible answer"
+        assert "hidden recalled lesson" not in result["content"]
+
+
+    def test_non_streamed_think_reasoning_strips_experience_memory_block(self):
+        class Agent:
+            verbose_logging = False
+            reasoning_callback = None
+            stream_delta_callback = None
+            _stream_callback = None
+
+            def _extract_reasoning(self, assistant_message):
+                return None
+
+            def _strip_think_blocks(self, text):
+                return text.replace(
+                    "<think><experience-memory-context>\nhidden reasoning lesson\n</experience-memory-context></think>",
+                    "",
+                )
+
+            def _needs_thinking_reasoning_pad(self):
+                return False
+
+        class Message:
+            content = (
+                "<think><experience-memory-context>\n"
+                "hidden reasoning lesson\n"
+                "</experience-memory-context></think>"
+                "Visible answer"
+            )
+            tool_calls = None
+            reasoning_content = None
+
+        result = build_assistant_message(Agent(), Message(), "stop")
+
+        assert result["content"] == "Visible answer"
+        assert result["reasoning"].strip() == ""
+        assert "hidden reasoning lesson" not in str(result)
 
 
 class TestStreamingContextScrubberPartialTagFalsePositives:

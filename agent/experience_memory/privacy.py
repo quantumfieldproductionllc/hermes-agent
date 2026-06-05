@@ -162,6 +162,8 @@ def scope_sql_predicate(scope: ExperienceScope, alias: str | None = None) -> str
     chat_hash = _col("chat_scope_hash", alias)
     thread_hash = _col("thread_scope_hash", alias)
     session_id = _col("session_id", alias)
+    session_ids = _session_scope_ids(scope)
+    session_placeholders = ", ".join("?" for _ in session_ids) or "?"
     return (
         f"({profile} = ? AND {workspace} = ? AND {platform} = ? AND ("
         f"{scope_level} = 'profile' OR "
@@ -169,8 +171,17 @@ def scope_sql_predicate(scope: ExperienceScope, alias: str | None = None) -> str
         f"({scope_level} = 'platform_user' AND {user_hash} = ?) OR "
         f"({scope_level} = 'chat' AND {user_hash} = ? AND {chat_hash} = ?) OR "
         f"({scope_level} = 'thread' AND {user_hash} = ? AND {chat_hash} = ? AND {thread_hash} = ?) OR "
-        f"({scope_level} = 'session' AND {session_id} = ?)))"
+        f"({scope_level} = 'session' AND {session_id} IN ({session_placeholders}))))"
     )
+
+
+def _session_scope_ids(scope: ExperienceScope) -> list[str]:
+    values: list[str] = []
+    for value in (scope.session_id, *getattr(scope, "session_lineage", ()), scope.parent_session_id):
+        text = str(value or "")
+        if text and text not in values:
+            values.append(text)
+    return values or [scope.session_id]
 
 
 def scope_sql_params(scope: ExperienceScope) -> list[str]:
@@ -184,7 +195,7 @@ def scope_sql_params(scope: ExperienceScope) -> list[str]:
         scope.user_scope_hash,
         scope.chat_scope_hash,
         scope.thread_scope_hash,
-        scope.session_id,
+        *_session_scope_ids(scope),
     ]
 
 

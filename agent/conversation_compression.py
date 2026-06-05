@@ -563,6 +563,13 @@ def compress_context(
                 reset=False,
                 reason="compression",
             )
+        if _old_sid and hasattr(agent, "_notify_experience_memory_session_switch"):
+            agent._notify_experience_memory_session_switch(
+                agent.session_id or "",
+                parent_session_id=_old_sid,
+                reset=False,
+                reason="compression",
+            )
     except Exception as _me_err:
         logger.debug("memory manager on_session_switch (compression): %s", _me_err)
 

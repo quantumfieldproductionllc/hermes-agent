@@ -6512,6 +6512,13 @@ class HermesCLI:
                         reset=True,
                         reason="new_session",
                     )
+                if hasattr(self.agent, "_notify_experience_memory_session_switch"):
+                    self.agent._notify_experience_memory_session_switch(
+                        self.session_id,
+                        parent_session_id=old_session_id or "",
+                        reset=True,
+                        reason="new_session",
+                    )
             except Exception:
                 pass
             self._notify_session_boundary("on_session_reset")
@@ -6795,6 +6802,13 @@ class HermesCLI:
                         reset=False,
                         reason="resume",
                     )
+                if hasattr(self.agent, "_notify_experience_memory_session_switch"):
+                    self.agent._notify_experience_memory_session_switch(
+                        target_id,
+                        parent_session_id=old_session_id or "",
+                        reset=False,
+                        reason="resume",
+                    )
             except Exception:
                 pass
 
@@ -6956,6 +6970,13 @@ class HermesCLI:
                 _mm = getattr(self.agent, "_memory_manager", None)
                 if _mm is not None:
                     _mm.on_session_switch(
+                        new_session_id,
+                        parent_session_id=parent_session_id or "",
+                        reset=False,
+                        reason="branch",
+                    )
+                if hasattr(self.agent, "_notify_experience_memory_session_switch"):
+                    self.agent._notify_experience_memory_session_switch(
                         new_session_id,
                         parent_session_id=parent_session_id or "",
                         reset=False,

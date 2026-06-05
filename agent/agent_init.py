@@ -192,6 +192,7 @@ def init_agent(
     skip_memory: bool = False,
     session_db=None,
     parent_session_id: str = None,
+    session_lineage: list[str] | tuple[str, ...] | None = None,
     iteration_budget: "IterationBudget" = None,
     fallback_model: Dict[str, Any] = None,
     credential_pool=None,
@@ -550,6 +551,10 @@ def init_agent(
     # erased delta1, so downstream state machines never learned a
     # block was open and leaked delta2 as content).
     agent._stream_think_scrubber = StreamingThinkScrubber()
+    # Stateful scrubber for provider reasoning deltas. Reasoning is delivered
+    # through a separate callback path, so it needs the same hidden context
+    # fence protection as visible assistant text.
+    agent._stream_reasoning_context_scrubber = StreamingContextScrubber()
     # Visible assistant text already delivered through live token callbacks
     # during the current model response. Used to avoid re-sending the same
     # commentary when the provider later returns it as a completed interim
@@ -1029,6 +1034,7 @@ def init_agent(
     # SQLite session store (optional -- provided by CLI or gateway)
     agent._session_db = session_db
     agent._parent_session_id = parent_session_id
+    agent._session_lineage = tuple(str(item) for item in (session_lineage or ()) if str(item or ""))
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
     agent._session_db_created = False  # DB row deferred to run_conversation()
     agent._session_init_model_config = {
@@ -1195,6 +1201,7 @@ def init_agent(
             try:
                 from agent.experience_memory.engine import ExperienceMemoryEngine
                 from agent.experience_memory.tool_gating import experience_memory_tools_allowed
+                from tools.schema_sanitizer import sanitize_tool_schemas
 
                 _profile = "default"
                 try:
@@ -1213,6 +1220,7 @@ def init_agent(
                     agent_identity=_profile,
                     agent_workspace="hermes",
                     parent_session_id=parent_session_id,
+                    session_lineage=getattr(agent, "_session_lineage", ()),
                     user_id=agent._user_id,
                     user_id_alt=agent._user_id_alt,
                     user_name=agent._user_name,
@@ -1242,7 +1250,12 @@ def init_agent(
                         _tname = _schema.get("name", "")
                         if _tname and _tname in _existing_tool_names:
                             continue
-                        agent.tools.append({"type": "function", "function": _schema})
+                        _wrapped_tools = sanitize_tool_schemas([
+                            {"type": "function", "function": _schema}
+                        ])
+                        if not _wrapped_tools:
+                            continue
+                        agent.tools.append(_wrapped_tools[0])
                         if _tname:
                             agent.valid_tool_names.add(_tname)
                             agent._experience_memory_tool_names.add(_tname)

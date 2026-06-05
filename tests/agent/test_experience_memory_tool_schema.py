@@ -30,6 +30,18 @@ def test_correct_schema_distinguishes_retract_tombstone_supersede_and_scrub():
         assert word in operation_description
 
 
+def test_supersede_schema_requires_replacement_title_and_body():
+    all_of = experience_memory_tool_schema()["parameters"]["allOf"]
+
+    supersede_rule = next(
+        rule
+        for rule in all_of
+        if rule.get("if", {}).get("properties", {}).get("operation", {}).get("const") == "supersede"
+    )
+
+    assert set(supersede_rule["then"]["required"]) == {"replacement_title", "replacement_body"}
+
+
 def test_schema_does_not_add_actions():
     action_enum = experience_memory_tool_schema()["parameters"]["properties"]["action"]["enum"]
 

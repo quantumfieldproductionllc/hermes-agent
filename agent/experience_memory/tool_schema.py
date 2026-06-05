@@ -139,6 +139,16 @@ def experience_memory_tool_schema(max_recall_items: int = 6) -> dict:
                     "if": {"properties": {"action": {"const": "correct"}}, "required": ["action"]},
                     "then": {"required": ["record_id", "operation", "reason"]},
                 },
+                {
+                    "if": {
+                        "properties": {
+                            "action": {"const": "correct"},
+                            "operation": {"const": "supersede"},
+                        },
+                        "required": ["action", "operation"],
+                    },
+                    "then": {"required": ["replacement_title", "replacement_body"]},
+                },
             ],
         },
     }
