@@ -597,6 +597,7 @@ def ensure_hermes_home():
         for subdir in (
             "cron", "sessions", "logs", "logs/curator", "memories",
             "pairing", "hooks", "image_cache", "audio_cache", "skills",
+            "experience",
         ):
             d = home / subdir
             d.mkdir(parents=True, exist_ok=True)
@@ -622,6 +623,7 @@ def _ensure_hermes_home_managed(home: Path):
     # In managed mode the activation script may not know about this subdir,
     # so we mkdir it ourselves (it's inside an already-secured logs/ dir).
     (home / "logs" / "curator").mkdir(parents=True, exist_ok=True)
+    (home / "experience").mkdir(parents=True, exist_ok=True)
     # Inside umask(0o007) scope — SOUL.md will be created as 0660
     _ensure_default_soul_md(home)
 
@@ -1392,6 +1394,35 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+    },
+
+    "experience_memory": {
+        "enabled": False,
+        "mode": "shadow",
+        "tools_enabled": True,
+        "prefetch_enabled": False,
+        "max_recall_items": 6,
+        "recall_token_budget": 1200,
+        "store": {
+            "busy_timeout_ms": 5000,
+            "retry_writes": 2,
+        },
+        "privacy": {
+            "redact_secrets": True,
+            "store_raw_excerpts": False,
+            "store_tool_payloads": False,
+            "allow_user_model": True,
+            "allow_cross_chat_retrieval": False,
+            "hash_gateway_ids": True,
+        },
+        "extraction": {
+            "enabled": False,
+            "max_queue_size": 200,
+            "retry_limit": 3,
+        },
+        "projections": {
+            "enabled": False,
+        },
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt

@@ -1047,6 +1047,8 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+    agent._experience_memory = None
+    agent._experience_memory_tool_names: set = set()
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(
@@ -1182,6 +1184,73 @@ def init_agent(
             if _tname:
                 agent.valid_tool_names.add(_tname)
                 _existing_tool_names.add(_tname)
+
+    # Experience Memory Engine (local, profile-scoped SQLite canonical store).
+    # Dynamic schemas are injected here, not through tools.registry.
+    if not skip_memory:
+        _eme_cfg = _agent_cfg.get("experience_memory", {}) or {}
+        _eme_enabled = bool(_eme_cfg.get("enabled", False))
+        _eme_mode = str(_eme_cfg.get("mode", "shadow") or "shadow").strip().lower()
+        if _eme_enabled and _eme_mode != "off":
+            try:
+                from agent.experience_memory.engine import ExperienceMemoryEngine
+                from agent.experience_memory.tool_gating import experience_memory_tools_allowed
+
+                _profile = "default"
+                try:
+                    from hermes_cli.profiles import get_active_profile_name
+
+                    _profile = get_active_profile_name()
+                except Exception:
+                    pass
+
+                _eme = ExperienceMemoryEngine(config=_eme_cfg)
+                _eme.initialize(
+                    agent.session_id,
+                    platform=platform or "cli",
+                    hermes_home=str(get_hermes_home()),
+                    agent_context="primary",
+                    agent_identity=_profile,
+                    agent_workspace="hermes",
+                    parent_session_id=parent_session_id,
+                    user_id=agent._user_id,
+                    user_id_alt=agent._user_id_alt,
+                    user_name=agent._user_name,
+                    chat_id=agent._chat_id,
+                    chat_name=agent._chat_name,
+                    chat_type=agent._chat_type,
+                    thread_id=agent._thread_id,
+                    gateway_session_key=agent._gateway_session_key,
+                )
+                agent._experience_memory = _eme
+
+                if (
+                    bool(_eme_cfg.get("tools_enabled", True))
+                    and experience_memory_tools_allowed(
+                        agent.enabled_toolsets,
+                        agent.disabled_toolsets,
+                    )
+                ):
+                    if agent.tools is None:
+                        agent.tools = []
+                    _existing_tool_names = {
+                        t.get("function", {}).get("name")
+                        for t in agent.tools
+                        if isinstance(t, dict)
+                    }
+                    for _schema in _eme.get_tool_schemas():
+                        _tname = _schema.get("name", "")
+                        if _tname and _tname in _existing_tool_names:
+                            continue
+                        agent.tools.append({"type": "function", "function": _schema})
+                        if _tname:
+                            agent.valid_tool_names.add(_tname)
+                            agent._experience_memory_tool_names.add(_tname)
+                            _existing_tool_names.add(_tname)
+            except Exception as _eme_err:
+                _ra().logger.warning("Experience Memory Engine init failed: %s", _eme_err)
+                agent._experience_memory = None
+                agent._experience_memory_tool_names = set()
 
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10

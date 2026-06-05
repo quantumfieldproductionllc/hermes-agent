@@ -3,6 +3,7 @@
 from tools.registry import ToolRegistry
 from toolsets import (
     TOOLSETS,
+    _HERMES_CORE_TOOLS,
     get_toolset,
     resolve_toolset,
     resolve_multiple_toolsets,
@@ -30,6 +31,12 @@ class TestGetToolset:
         ts = get_toolset("web")
         assert ts is not None
         assert "web_search" in ts["tools"]
+
+    def test_experience_memory_is_logical_toolset(self):
+        ts = get_toolset("experience_memory")
+        assert ts is not None
+        assert ts["tools"] == []
+        assert ts["includes"] == []
 
     def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
         reg = ToolRegistry()
@@ -77,6 +84,9 @@ class TestResolveToolset:
     def test_unknown_toolset_returns_empty(self):
         assert resolve_toolset("nonexistent") == []
 
+    def test_experience_memory_resolves_to_no_registry_tools(self):
+        assert resolve_toolset("experience_memory") == []
+
     def test_plugin_toolset_uses_registry_snapshot(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(
@@ -122,6 +132,7 @@ class TestValidateToolset:
     def test_valid(self):
         assert validate_toolset("web") is True
         assert validate_toolset("terminal") is True
+        assert validate_toolset("experience_memory") is True
 
     def test_all_alias_valid(self):
         assert validate_toolset("all") is True
@@ -246,6 +257,9 @@ class TestToolsetConsistency:
             "clarify",
         }
         assert "clarify" in tools
+
+    def test_experience_memory_not_in_core_registry_tool_bundle(self):
+        assert "experience_memory" not in _HERMES_CORE_TOOLS
 
 
 class TestPluginToolsets:

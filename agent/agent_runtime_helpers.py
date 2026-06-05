@@ -1625,6 +1625,21 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     if block_message is not None:
         return json.dumps({"error": block_message}, ensure_ascii=False)
 
+    if (
+        function_name in getattr(agent, "_experience_memory_tool_names", set())
+        and getattr(agent, "_experience_memory", None) is not None
+    ):
+        try:
+            return agent._experience_memory.handle_tool_call(
+                function_name,
+                function_args,
+                task_id=effective_task_id,
+                tool_call_id=tool_call_id,
+                session_id=getattr(agent, "session_id", "") or "",
+            )
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+
     if function_name == "todo":
         from tools.todo_tool import todo_tool as _todo_tool
         return _todo_tool(

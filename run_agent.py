@@ -2245,6 +2245,15 @@ class AIAgent:
                 self._memory_manager.shutdown_all()
             except Exception:
                 pass
+        if getattr(self, "_experience_memory", None):
+            try:
+                self._experience_memory.on_session_end(messages or [])
+            except Exception:
+                pass
+            try:
+                self._experience_memory.shutdown()
+            except Exception:
+                pass
         # Notify context engine of session end (flush DAG, close DBs, etc.)
         if hasattr(self, "context_compressor") and self.context_compressor:
             try:
@@ -2263,6 +2272,11 @@ class AIAgent:
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
+            except Exception:
+                pass
+        if getattr(self, "_experience_memory", None):
+            try:
+                self._experience_memory.on_session_end(messages or [])
             except Exception:
                 pass
         # Notify context engine of session end too — same lifecycle moment as

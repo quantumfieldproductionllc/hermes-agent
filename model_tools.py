@@ -838,6 +838,18 @@ def handle_function_call(
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
 
+    if function_name == "experience_memory":
+        return json.dumps(
+            {
+                "ok": False,
+                "error": (
+                    "experience_memory is an agent-level dynamic tool and is "
+                    "not available through the registry dispatcher"
+                ),
+            },
+            ensure_ascii=False,
+        )
+
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
     # inline. tool_call is unwrapped to the underlying tool so that every

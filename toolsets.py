@@ -216,6 +216,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "experience_memory": {
+        "description": "Dynamic Experience Memory Engine tool",
+        "tools": [],
+        "includes": []
+    },
+
     "context_engine": {
         "description": "Runtime tools exposed by the active context engine",
         "tools": [],
