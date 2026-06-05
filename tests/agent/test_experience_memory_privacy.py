@@ -107,3 +107,21 @@ def test_redaction_covers_common_secret_shapes():
     payload = redact_payload({"api_key": "abc123", "safe": ["Bearer " + "abcdefghijkl"]})
     assert payload["api_key"] == "[REDACTED]"
     assert "abcdefghijkl" not in payload["safe"][0]
+
+
+def test_redaction_covers_natural_language_credential_phrases():
+    text = (
+        "credentials: hunter2 and credentials = swordfish and "
+        "my login credentials are hunter3 and "
+        "the API key for staging is abcdef1234567890abcdef"
+    )
+
+    redacted = redact_text(text)
+
+    for raw in ("hunter2", "swordfish", "hunter3", "abcdef1234567890abcdef"):
+        assert raw not in redacted
+    assert redacted.count("[REDACTED]") == 4
+
+    payload = redact_payload({"credentials": "hunter2", "safe": "ok"})
+    assert payload["credentials"] == "[REDACTED]"
+    assert payload["safe"] == "ok"

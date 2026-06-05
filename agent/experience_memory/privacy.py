@@ -194,7 +194,18 @@ _PRIVATE_KEY_RE = re.compile(
 )
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{12,}")
 _SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(api[_-]?key|token|secret|password|passwd|pwd)\s*[:=]\s*['\"]?[^'\"\s]+"
+    r"(?i)\b(api[_-]?key|api\s+key|token|secret|password|passwd|pwd|credentials?|private\s+key)\s*[:=]\s*['\"]?[^'\"\s]+"
+)
+_CREDENTIALS_ARE_RE = re.compile(
+    r"(?i)\b((?:my|the|a|an|our|your)?\s*(?:login\s+)?credentials?)\s+"
+    r"(?:is|was|are|were)\s+['\"]?[^'\"\s.,;:]+"
+)
+_NATURAL_SECRET_RE = re.compile(
+    r"(?i)\b((?:my|the|a|an|our|your)?\s*"
+    r"(?:[\w-]+\s+){0,6}"
+    r"(?:api[_-]?key|api\s+key|token|secret|password|passwd|pwd|credentials?|private\s+key)"
+    r"(?:\s+(?:for|to|of|in|on|at|with|from|[\w-]+)){0,8}"
+    r"\s+(?:is|was|are|were))\s+['\"]?[^'\"\s.,;:]+"
 )
 _ENV_SECRET_RE = re.compile(
     r"(?im)^([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD)[A-Z0-9_]*)=.*$"
@@ -216,6 +227,8 @@ def redact_text(text: str | None) -> str:
     value = _PRIVATE_KEY_RE.sub("[REDACTED_PRIVATE_KEY]", value)
     value = _BEARER_RE.sub("Bearer [REDACTED]", value)
     value = _ENV_SECRET_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", value)
+    value = _CREDENTIALS_ARE_RE.sub(lambda m: f"{m.group(1)} are [REDACTED]", value)
+    value = _NATURAL_SECRET_RE.sub(lambda m: f"{m.group(1)} [REDACTED]", value)
     value = _SECRET_ASSIGNMENT_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", value)
     value = _COMMON_KEY_RE.sub("[REDACTED_SECRET]", value)
     return value
@@ -231,7 +244,7 @@ def redact_payload(payload: Any) -> Any:
     if isinstance(payload, dict):
         redacted: dict[str, Any] = {}
         for key, value in payload.items():
-            if re.search(r"(?i)(api[_-]?key|token|secret|password|passwd|pwd)", str(key)):
+            if re.search(r"(?i)(api[_-]?key|api\s+key|token|secret|password|passwd|pwd|credentials?)", str(key)):
                 redacted[str(key)] = "[REDACTED]"
             else:
                 redacted[str(key)] = redact_payload(value)

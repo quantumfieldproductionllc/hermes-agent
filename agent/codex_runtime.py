@@ -143,6 +143,18 @@ def run_codex_app_server_turn(
             )
         except Exception:
             logger.debug("external memory sync raised", exc_info=True)
+        try:
+            agent._sync_experience_memory_for_turn(
+                original_user_message=original_user_message,
+                final_response=turn.final_text,
+                completed=True,
+                failed=False,
+                interrupted=False,
+                messages=messages,
+                turn_error=turn.error,
+            )
+        except Exception:
+            logger.debug("experience memory sync raised", exc_info=True)
 
     # Background review fork — same cadence + signature as the default
     # path (line ~15449). Only fires when a trigger actually tripped AND

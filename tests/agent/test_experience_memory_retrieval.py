@@ -1,5 +1,12 @@
 from agent.experience_memory.models import ExperienceQuery, ExperienceRecord, ExperienceScope
+from agent.experience_memory.retrieval import sanitize_fts_query
 from agent.experience_memory.store import ExperienceStore
+
+
+def test_sanitize_fts_query_strips_question_stopwords_for_prefetch():
+    assert sanitize_fts_query("How should we run targeted Hermes EME tests?") == (
+        "run targeted Hermes EME tests"
+    )
 
 
 def test_invalid_fts_query_returns_empty_without_raising(tmp_path):

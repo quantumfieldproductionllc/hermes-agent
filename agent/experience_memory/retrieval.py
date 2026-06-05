@@ -3,19 +3,60 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 
 from agent.experience_memory.models import ExperienceQuery, ExperienceResult
 from agent.experience_memory.privacy import scope_sql_params, scope_sql_predicate
 
+_QUERY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "can",
+    "do",
+    "for",
+    "how",
+    "i",
+    "in",
+    "is",
+    "it",
+    "me",
+    "of",
+    "on",
+    "or",
+    "please",
+    "should",
+    "the",
+    "this",
+    "to",
+    "we",
+    "what",
+    "when",
+    "where",
+    "with",
+    "you",
+}
+
 
 def sanitize_fts_query(query: str) -> str:
-    try:
-        from hermes_state import SessionDB
+    """Build a conservative FTS5 query from arbitrary user text.
 
-        return SessionDB._sanitize_fts5_query(str(query or ""))
-    except Exception:
-        return str(query or "").strip()
+    EME prefetch uses raw user turns as queries. SessionDB's richer sanitizer can
+    preserve some FTS operators, but arbitrary code-ish text such as
+    ``scripts/run_tests.sh`` can become malformed (`scripts/"run_tests.sh"`).
+    For experience recall we prefer lexical robustness over advanced FTS syntax:
+    split to word-ish terms and let FTS5's default AND semantics rank matches.
+    """
+    terms = re.findall(r"[\w]+", str(query or ""), flags=re.UNICODE)
+    filtered = [term for term in terms if term and term.lower() not in _QUERY_STOPWORDS]
+    if not filtered and terms:
+        filtered = terms[:8]
+    return " ".join(filtered).strip()
 
 
 def _loads_json(raw: str, default):

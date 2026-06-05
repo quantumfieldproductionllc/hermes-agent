@@ -2348,6 +2348,42 @@ class AIAgent:
         except Exception:
             pass
 
+    def _sync_experience_memory_for_turn(
+        self,
+        *,
+        original_user_message: Any,
+        final_response: Any,
+        completed: bool,
+        failed: bool,
+        interrupted: bool,
+        messages: list | None = None,
+        turn_error: Any = None,
+    ) -> None:
+        """Best-effort completed-turn sync for local experience memory."""
+        engine = getattr(self, "_experience_memory", None)
+        if engine is None:
+            return
+        if not completed or failed or interrupted:
+            return
+        if turn_error is not None:
+            return
+        if not (final_response and original_user_message):
+            return
+        try:
+            engine.sync_turn(
+                original_user_message=original_user_message,
+                final_response=final_response,
+                messages=messages,
+                completed=completed,
+                failed=failed,
+                interrupted=interrupted,
+                session_id=self.session_id or "",
+                source_turn_index=getattr(self, "_user_turn_count", None),
+                turn_error=turn_error,
+            )
+        except Exception:
+            logger.warning("Experience Memory Engine sync failed", exc_info=True)
+
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
 

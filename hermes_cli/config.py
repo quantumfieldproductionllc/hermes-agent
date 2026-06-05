@@ -1417,6 +1417,11 @@ DEFAULT_CONFIG = {
         },
         "extraction": {
             "enabled": False,
+            "explicit_signals_only": True,
+            "max_records_per_turn": 3,
+            "max_title_chars": 90,
+            "max_body_chars": 700,
+            "max_raw_excerpt_chars": 240,
             "max_queue_size": 200,
             "retry_limit": 3,
         },

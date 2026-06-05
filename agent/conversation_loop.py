@@ -30,6 +30,10 @@ from typing import Any, Dict, List, Optional
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.experience_memory.prompting import (
+    append_context_to_user_content,
+    extract_text_from_user_content,
+)
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
@@ -730,6 +734,16 @@ def run_conversation(
             agent._memory_manager.on_turn_start(agent._user_turn_count, _turn_msg)
         except Exception:
             pass
+    if getattr(agent, "_experience_memory", None):
+        try:
+            _turn_msg = extract_text_from_user_content(original_user_message)
+            agent._experience_memory.on_turn_start(
+                agent._user_turn_count,
+                _turn_msg,
+                session_id=agent.session_id or "",
+            )
+        except Exception:
+            pass
 
     # External memory provider: prefetch once before the tool loop.
     # Reuse the cached result on every iteration to avoid re-calling
@@ -741,6 +755,17 @@ def run_conversation(
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
             _ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+        except Exception:
+            pass
+    _eme_prefetch_cache = ""
+    if getattr(agent, "_experience_memory", None) and agent.api_mode != "codex_app_server":
+        try:
+            _query = extract_text_from_user_content(original_user_message)
+            if _query:
+                _eme_prefetch_cache = agent._experience_memory.prefetch(
+                    _query,
+                    session_id=agent.session_id or "",
+                ) or ""
         except Exception:
             pass
 
@@ -907,8 +932,9 @@ def run_conversation(
             api_msg = msg.copy()
 
             # Inject ephemeral context into the current turn's user message.
-            # Sources: memory manager prefetch + plugin pre_llm_call hooks
-            # with target="user_message" (the default).  Both are
+            # Sources: memory manager prefetch, Experience Memory Engine
+            # scoped recall, and plugin pre_llm_call hooks with
+            # target="user_message" (the default).  All are
             # API-call-time only — the original message in `messages` is
             # never mutated, so nothing leaks into session persistence.
             if idx == current_turn_user_idx and msg.get("role") == "user":
@@ -917,12 +943,15 @@ def run_conversation(
                     _fenced = build_memory_context_block(_ext_prefetch_cache)
                     if _fenced:
                         _injections.append(_fenced)
+                if _eme_prefetch_cache:
+                    _injections.append(_eme_prefetch_cache)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
                 if _injections:
-                    _base = api_msg.get("content", "")
-                    if isinstance(_base, str):
-                        api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                    api_msg["content"] = append_context_to_user_content(
+                        api_msg.get("content", ""),
+                        "\n\n".join(_injections),
+                    )
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved
@@ -4565,6 +4594,14 @@ def run_conversation(
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message,
         final_response=final_response,
+        interrupted=interrupted,
+        messages=messages,
+    )
+    agent._sync_experience_memory_for_turn(
+        original_user_message=original_user_message,
+        final_response=final_response,
+        completed=completed,
+        failed=failed,
         interrupted=interrupted,
         messages=messages,
     )

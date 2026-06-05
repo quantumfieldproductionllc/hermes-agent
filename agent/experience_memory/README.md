@@ -81,6 +81,11 @@ experience_memory:
     hash_gateway_ids: true
   extraction:
     enabled: false
+    explicit_signals_only: true
+    max_records_per_turn: 3
+    max_title_chars: 90
+    max_body_chars: 700
+    max_raw_excerpt_chars: 240
     max_queue_size: 200
     retry_limit: 3
   projections:
@@ -91,6 +96,8 @@ Enable locally:
 
 ```bash
 hermes config set experience_memory.enabled true
+hermes config set experience_memory.prefetch_enabled true
+hermes config set experience_memory.extraction.enabled true
 hermes tools enable experience_memory
 ```
 
@@ -194,23 +201,22 @@ Last verified result during implementation review: `92 passed, 0 failed`.
 
 These are deliberate post-MVP layers, not missing MVP pieces:
 
-- Automatic turn extraction.
+- LLM-based turn extraction.
 - Compression-window extraction.
-- Prompt-time `<experience-memory-context>` prefetch injection.
 - External projection workers for Hindsight, skills, Obsidian, or memory files.
 - Embedding retrieval.
 - `hermes experience ...` CLI commands.
 - Automatic skill creation.
 - Rich split tables for cases/decisions/rules/user-model updates/skill candidates.
 
-## Next build layer
+## Usable MVP layer
 
-The next useful increment is the Experience Compiler:
+The usable MVP adds prompt-time scoped recall injection and deterministic
+capture of explicit user "remember/record/learn/save" instructions. Both are
+disabled by default and fail open. Recall context is appended only to the
+current API user-message copy; it is not written to the system prompt,
+transcript, session DB, or trajectory.
 
-1. Observe completed turns and compression windows.
-2. Extract structured candidate events/records.
-3. Store them in EME as canonical local memory.
-4. Retrieve relevant scoped experience at turn start.
-5. Project approved lessons into skills, Hindsight, Obsidian, or compact prompt memory.
-
-That turns EME from a manual memory store into Hermes' actual learning metabolism.
+See `docs/plans/experience-memory-usable-mvp-plan.md` for the approved design.
+It deliberately excludes LLM extraction, projections, embeddings, CLI commands,
+registry-backed tools, and automatic skill creation.

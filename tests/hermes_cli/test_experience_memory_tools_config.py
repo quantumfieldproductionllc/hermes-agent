@@ -10,6 +10,11 @@ def test_experience_memory_defaults_are_disabled():
     assert cfg["tools_enabled"] is True
     assert cfg["prefetch_enabled"] is False
     assert cfg["extraction"]["enabled"] is False
+    assert cfg["extraction"]["explicit_signals_only"] is True
+    assert cfg["extraction"]["max_records_per_turn"] == 3
+    assert cfg["extraction"]["max_title_chars"] == 90
+    assert cfg["extraction"]["max_body_chars"] == 700
+    assert cfg["extraction"]["max_raw_excerpt_chars"] == 240
     assert cfg["projections"]["enabled"] is False
     assert "experience_memory" not in DEFAULT_CONFIG.get("auxiliary", {})
 
