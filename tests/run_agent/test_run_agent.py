@@ -3481,6 +3481,7 @@ class TestRunConversation:
             return []
 
         with (
+            patch("hermes_cli.plugins.has_hook", side_effect=lambda name: name == "post_api_request"),
             patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -3495,7 +3496,10 @@ class TestRunConversation:
         assert "hidden recalled lesson" not in post_calls[0]["assistant_message"].content
         assert "hidden reasoning" not in str(getattr(post_calls[0]["assistant_message"], "reasoning", ""))
         assert "hidden native reasoning" not in str(getattr(post_calls[0]["assistant_message"], "reasoning_content", ""))
-        assert post_calls[0]["response"] is None
+        assert post_calls[0]["response"] is not None
+        assert "hidden recalled lesson" not in str(post_calls[0]["response"])
+        assert "hidden reasoning" not in str(post_calls[0]["response"])
+        assert "hidden native reasoning" not in str(post_calls[0]["response"])
 
     def test_length_continuation_sanitizes_truncated_experience_memory_echo(self, agent):
         self._setup_agent(agent)
