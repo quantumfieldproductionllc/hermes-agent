@@ -544,9 +544,10 @@ _TELEGRAM_MENU_PRIORITY = (
 )
 """Built-in commands that should stay visible in Telegram's capped menu.
 
-Telegram only displays a small BotCommand menu in practice.  The full Hermes
-registry is still dispatchable when typed manually, but operational commands
-need to survive the visible menu cap ahead of lower-priority built-ins.
+Telegram BotCommand registration is capped, and extra skills/plugins can fill
+the tail.  The full Hermes registry is still dispatchable when typed manually,
+but operational commands need to survive the visible menu cap ahead of
+lower-priority built-ins.
 """
 
 

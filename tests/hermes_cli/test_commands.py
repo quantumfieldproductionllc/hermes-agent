@@ -957,6 +957,32 @@ class TestTelegramMenuCommands:
                 f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
             )
 
+    def test_default_menu_has_room_for_every_builtin_command(self, tmp_path, monkeypatch):
+        """Telegram registration should expose all built-in commands before skills.
+
+        Regression: the adapter used to pass a 30-command cap, hiding valid
+        built-ins like /goal, /voice, /footer, and /version from Telegram's
+        slash menu even though the Bot API supports 100 commands per scope.
+        """
+        from unittest.mock import patch
+
+        (tmp_path / "config.yaml").write_text("")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with (
+            patch("hermes_cli.plugins.get_plugin_commands", return_value={}),
+            patch("agent.skill_commands.get_skill_commands", return_value={}),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            menu, hidden = telegram_menu_commands()
+            builtin_names = {name for name, _desc in telegram_bot_commands()}
+
+        menu_names = {name for name, _desc in menu}
+        assert len(builtin_names) <= 100
+        assert builtin_names <= menu_names
+        assert hidden == 0
+
     def test_operational_builtins_survive_thirty_command_cap(self, tmp_path, monkeypatch):
         (tmp_path / "config.yaml").write_text(
             "display:\n  tool_progress_command: true\n"

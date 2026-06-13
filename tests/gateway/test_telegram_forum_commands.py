@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.telegram import MAX_COMMANDS_PER_SCOPE
 
 
 def _make_test_adapter():
@@ -28,6 +29,10 @@ def _forum_message(chat_id=-100, is_forum=True):
     return SimpleNamespace(
         chat=SimpleNamespace(id=chat_id, is_forum=is_forum),
     )
+
+
+def test_telegram_adapter_uses_full_bot_api_command_cap():
+    assert MAX_COMMANDS_PER_SCOPE == 100
 
 
 @pytest.mark.asyncio
