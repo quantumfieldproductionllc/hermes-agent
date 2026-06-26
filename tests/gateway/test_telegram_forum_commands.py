@@ -12,7 +12,7 @@ from gateway.platforms.telegram import MAX_COMMANDS_PER_SCOPE
 
 def _make_test_adapter():
     """Build a TelegramAdapter without running __init__."""
-    from gateway.platforms.telegram import TelegramAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
