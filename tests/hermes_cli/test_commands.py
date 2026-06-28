@@ -254,11 +254,13 @@ class TestTelegramBotCommands:
         assert "queue" in names
         assert "steer" in names
 
-    def test_hyphenated_codex_runtime_is_exposed_as_underscore_command(self):
-        """Telegram autocomplete exposes /codex-runtime as /codex_runtime."""
+    def test_low_frequency_builtins_hidden_from_menu_but_resolvable(self):
+        """Curated Telegram menu hides noisy built-ins without disabling them."""
         names = {name for name, _ in telegram_bot_commands()}
-        assert "codex_runtime" in names
-        assert "codex-runtime" not in names
+        assert "codex_runtime" not in names
+        assert "yolo" not in names
+        assert resolve_command("codex-runtime") is not None
+        assert resolve_command("yolo") is not None
 
 
 class TestSlackSubcommandMap:
@@ -1131,30 +1133,45 @@ class TestTelegramMenuCommands:
                 f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
             )
 
-    def test_default_menu_has_room_for_every_builtin_command(self, tmp_path, monkeypatch):
-        """Telegram registration should expose all built-in commands before skills.
+    def test_default_menu_curates_noisy_builtins_and_leaves_room_for_skills(self, tmp_path, monkeypatch):
+        """Telegram's visible menu should be operational, not an everything drawer.
 
-        Regression: the adapter used to pass a 30-command cap, hiding valid
-        built-ins like /goal, /voice, /footer, and /version from Telegram's
-        slash menu even though the Bot API supports 100 commands per scope.
+        Low-frequency built-ins remain manually dispatchable and listed under
+        /commands, while the visible BotCommand menu leaves slots for local
+        bundles/skills.
         """
         from unittest.mock import patch
 
         (tmp_path / "config.yaml").write_text("")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
+        fake_skills_dir = tmp_path / "skills"
+        fake_skills_dir.mkdir()
+        fake_cmds = {
+            "/local-skill": {
+                "name": "local-skill",
+                "description": "Visible local skill",
+                "skill_md_path": f"{fake_skills_dir}/local-skill/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/local-skill",
+            }
+        }
+
         with (
             patch("hermes_cli.plugins.get_plugin_commands", return_value={}),
-            patch("agent.skill_commands.get_skill_commands", return_value={}),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", fake_skills_dir),
             patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
         ):
             menu, hidden = telegram_menu_commands()
-            builtin_names = {name for name, _desc in telegram_bot_commands()}
 
         menu_names = {name for name, _desc in menu}
-        assert len(builtin_names) <= 100
-        assert builtin_names <= menu_names
+        assert "help" in menu_names
+        assert "new" in menu_names
+        assert "stop" in menu_names
+        assert "background" in menu_names
+        assert "local_skill" in menu_names
+        assert "yolo" not in menu_names
+        assert "codex_runtime" not in menu_names
         assert hidden == 0
 
     def test_operational_builtins_survive_thirty_command_cap(self, tmp_path, monkeypatch):
@@ -1245,7 +1262,7 @@ class TestTelegramMenuCommands:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         with patch.object(plugins_mod, "_plugin_manager", None):
-            menu, _hidden = telegram_menu_commands(max_commands=30)
+            menu, _hidden = telegram_menu_commands(max_commands=40)
 
         names = [name for name, _desc in menu]
         assert names.index("help") < names.index("lcm")
@@ -1349,6 +1366,44 @@ class TestTelegramMenuCommands:
 
         menu_names = {name for name, _ in menu}
         assert "lcm" in menu_names
+
+    def test_includes_local_skill_bundles_before_skill_tail(self, tmp_path, monkeypatch):
+        """High-signal local bundles like /dojo should reach Telegram's menu."""
+        from unittest.mock import patch
+
+        bundle_dir = tmp_path / "skill-bundles"
+        bundle_dir.mkdir()
+        (bundle_dir / "dojo.yaml").write_text(
+            "name: dojo\n"
+            "description: Analyze and improve Hermes\n"
+            "skills:\n"
+            "  - hermes-dojo\n"
+        )
+        fake_skills_dir = tmp_path / "skills"
+        fake_skills_dir.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        fake_cmds = {
+            f"/skill-{i:03d}": {
+                "name": f"skill-{i:03d}",
+                "description": f"Skill {i}",
+                "skill_md_path": f"{fake_skills_dir}/skill-{i:03d}/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/skill-{i:03d}",
+            }
+            for i in range(20)
+        }
+
+        with (
+            patch("hermes_cli.plugins.get_plugin_commands", return_value={}),
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", fake_skills_dir),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            menu, _hidden = telegram_menu_commands(max_commands=36)
+
+        names = [name for name, _ in menu]
+        assert "dojo" in names
+        assert names.index("dojo") < names.index("skill_000")
 
     def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
         """Skills disabled for telegram should not appear in the menu."""

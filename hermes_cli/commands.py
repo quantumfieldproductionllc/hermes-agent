@@ -504,28 +504,47 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     return entries
 
 
+# Commands still work when typed manually and remain listed under /commands;
+# this only curates Telegram's visible BotCommand menu. Keep the menu focused:
+# Telegram users need fast session control, approvals, model/voice knobs, and
+# gateway diagnostics. Rare/admin/developer surfaces should not crowd out user
+# skills and local bundles.
+_TELEGRAM_MENU_HIDDEN_BUILTINS = frozenset({
+    "start",          # Telegram sends it from the Start button; no menu slot needed.
+    "branch",         # Advanced session topology; /new + /resume cover the common flow.
+    "rollback",       # Filesystem checkpoint recovery; too rare for the bot menu.
+    "goal", "subgoal", "moa",  # High/long-running planning modes; manual only.
+    "codex-runtime",  # Provider-specific runtime toggle.
+    "personality", "fast", "insights",  # Nice-to-have knobs/reports; manual only.
+    "footer", "yolo",  # Risky/noisy global toggles; manual only.
+    "bundles",        # Bundle entries themselves are surfaced directly below.
+    "learn", "suggestions", "blueprint", "curator", "kanban",
+    "reload-mcp", "reload-skills",
+    "credits",        # Billing/credits are reachable via /commands.
+})
+
+
 def telegram_bot_commands() -> list[tuple[str, str]]:
-    """Return (command_name, description) pairs for Telegram setMyCommands.
+    """Return curated built-in/plugin commands for Telegram setMyCommands.
 
     Telegram command names cannot contain hyphens, so they are replaced with
-    underscores.  Aliases are skipped -- Telegram shows one menu entry per
-    canonical command.
+    underscores. Aliases are skipped: the menu shows one canonical spelling per
+    command. Low-frequency built-ins are deliberately hidden from the visible
+    menu but remain dispatchable when typed manually and discoverable via
+    ``/commands``.
 
     Built-in commands that require arguments (e.g. /queue, /steer, /background)
-    are **included** because their handlers return usage text when selected
-    without a payload, making them discoverable via autocomplete.
-
-    Plugin-registered slash commands that require arguments are **excluded**
-    because plugins may not provide a no-arg usage fallback.
+    stay included because their handlers return usage text when selected without
+    a payload. Plugin commands that require arguments are excluded because
+    plugins may not provide a no-arg usage fallback.
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
+        if cmd.name in _TELEGRAM_MENU_HIDDEN_BUILTINS:
+            continue
         if not _is_gateway_available(cmd, overrides):
             continue
-        # Built-in arg-taking commands are included — their handlers show
-        # usage text when invoked without arguments, and hiding them from
-        # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
             result.append((tg_name, cmd.description))
@@ -538,50 +557,49 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     return result
 
 
-# Telegram allows up to 100 BotCommands. Hermes ships ~50 built-in commands;
-# a 60-slot default keeps every built-in plus common skill commands visible in
-# the `/` menu while staying comfortably under Telegram's ~4KB payload limit.
-# Users can tune this via platforms.telegram.extra.command_menu.max_commands.
+# Telegram allows up to 100 BotCommands but also has a practical payload-size
+# ceiling. 60 keeps the operational core plus local bundles/skills visible;
+# low-frequency built-ins are curated out by _TELEGRAM_MENU_HIDDEN_BUILTINS.
+# Users can tune the cap via platforms.telegram.extra.command_menu.max_commands.
 _DEFAULT_TELEGRAM_MENU_MAX_COMMANDS = 60
 _TELEGRAM_BOT_API_MAX_COMMANDS = 100
 _TELEGRAM_PRIORITY_MODES = {"prepend", "append", "replace"}
 
 _TELEGRAM_MENU_PRIORITY = (
-    # Most-typed everyday commands first.
     "help",
+    "commands",
     "new",
     "stop",
     "status",
-    "resume",
-    "sessions",
-    "model",
-    # Maintenance / diagnostics — the ones that prompted this priority list.
-    "debug",
-    "restart",
-    "update",
-    "verbose",
-    "commands",
-    # Mid-turn session control.
+    "agents",
     "approve",
     "deny",
     "queue",
     "steer",
     "background",
-    # Lower-priority but still useful operational built-ins.
+    "model",
     "reasoning",
+    "voice",
+    "resume",
+    "sessions",
+    "compress",
+    "retry",
+    "undo",
+    "title",
+    "sethome",
+    "topic",
+    "debug",
+    "restart",
+    "update",
     "usage",
-    "platforms",
+    "verbose",
     "platform",
     "profile",
     "whoami",
+    "version",
+    "memory",
 )
-"""Built-in commands that should stay visible in Telegram's capped menu.
-
-Telegram BotCommand registration is capped, and extra skills/plugins can fill
-the tail.  The full Hermes registry is still dispatchable when typed manually,
-but operational commands need to survive the visible menu cap ahead of
-lower-priority built-ins.
-"""
+"""Visible Telegram menu priority for high-value operational commands."""
 
 
 def _nested_mapping(root: Mapping[str, Any], *path: str) -> Mapping[str, Any]:
@@ -883,6 +901,42 @@ def _collect_gateway_skill_entries(
     return all_entries[:max_slots], hidden_count
 
 
+def _collect_gateway_bundle_entries(
+    max_slots: int,
+    reserved_names: set[str],
+    desc_limit: int = 100,
+    sanitize_name: "Callable[[str], str] | None" = None,
+) -> tuple[list[tuple[str, str, str]], int]:
+    """Collect local skill bundles for gateway command menus.
+
+    Bundles are user-authored aliases like ``/dojo`` that expand one or more
+    skills. They are more personal and higher-signal than the alphabetical skill
+    tail, so Telegram surfaces them before individual skills. Hub skills remain
+    out of scope here; this reads only ``~/.hermes/skill-bundles``.
+    """
+    bundle_triples: list[tuple[str, str, str]] = []
+    try:
+        from agent.skill_bundles import get_skill_bundles
+        for cmd_key, info in sorted(get_skill_bundles().items()):
+            raw_name = cmd_key.lstrip("/")
+            name = sanitize_name(raw_name) if sanitize_name else raw_name
+            if not name:
+                continue
+            desc = str(info.get("description") or f"Load {raw_name} skill bundle")
+            if len(desc) > desc_limit:
+                desc = desc[:desc_limit - 3] + "..."
+            bundle_triples.append((name, desc, cmd_key))
+    except Exception:
+        pass
+
+    clamped = _clamp_command_names(bundle_triples, reserved_names)
+    normalized: list[tuple[str, str, str]] = [(n, d, k) for n, d, k in clamped]
+    reserved_names.update(n for n, _d, _k in normalized)
+    remaining = max(0, max_slots)
+    hidden_count = max(0, len(normalized) - remaining)
+    return normalized[:remaining], hidden_count
+
+
 # ---------------------------------------------------------------------------
 # Platform-specific wrappers
 # ---------------------------------------------------------------------------
@@ -891,14 +945,16 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     """Return Telegram menu commands capped to the Bot API limit.
 
     Priority order (higher priority = never bumped by overflow):
-      1. Core CommandDef commands (always included)
-      2. Plugin slash commands (take precedence over skills)
-      3. Built-in skill commands (fill remaining slots, alphabetical)
+      1. Curated core CommandDef commands
+      2. Local skill bundles (e.g. /dojo)
+      3. Plugin slash commands (take precedence over skills)
+      4. Built-in skill commands (fill remaining slots, alphabetical)
 
-    Skills are the only tier that gets trimmed when the cap is hit.
-    User-installed hub skills are excluded — accessible via /skills.
-    Skills disabled for the ``"telegram"`` platform (via ``hermes skills
-    config``) are excluded from the menu entirely.
+    Bundles and skills are trimmed when the cap is hit. Low-frequency built-ins
+    are intentionally omitted from the visible Telegram menu but remain
+    dispatchable manually and listed in /commands. User-installed hub skills are
+    excluded — accessible via /skills. Skills disabled for the ``"telegram"``
+    platform (via ``hermes skills config``) are excluded from the menu entirely.
 
     Returns:
         (menu_commands, hidden_count) where hidden_count is the number of
@@ -910,6 +966,15 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     hidden_core_count = max(0, len(all_commands) - max_commands)
 
     remaining_slots = max(0, max_commands - len(all_commands))
+    bundle_entries, hidden_bundle_count = _collect_gateway_bundle_entries(
+        max_slots=remaining_slots,
+        reserved_names=reserved_names,
+        desc_limit=40,
+        sanitize_name=_sanitize_telegram_name,
+    )
+    all_commands.extend((n, d) for n, d, _k in bundle_entries)
+
+    remaining_slots = max(0, max_commands - len(all_commands))
     entries, hidden_count = _collect_gateway_skill_entries(
         platform="telegram",
         max_slots=remaining_slots,
@@ -919,7 +984,7 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     )
     # Drop the cmd_key — Telegram only needs (name, desc) pairs.
     all_commands.extend((n, d) for n, d, _k in entries)
-    return all_commands[:max_commands], hidden_count + hidden_core_count
+    return all_commands[:max_commands], hidden_count + hidden_bundle_count + hidden_core_count
 
 
 def discord_skill_commands(
