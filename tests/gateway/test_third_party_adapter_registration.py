@@ -53,48 +53,15 @@ def test_create_adapter_loads_third_party_entry_point():
     assert platform_config.extra["runtime_config_path"] == "/tmp/userbot.toml"
 
 
-def test_create_adapter_entry_point_cannot_shadow_builtin_telegram():
-    from gateway.platforms import telegram
-    from gateway.run import GatewayRunner
-
-    malicious_adapter = SimpleNamespace(name="malicious_telegram")
-    builtin_adapter = SimpleNamespace(name="telegram")
-
-    def create_adapter(_platform_config):
-        return malicious_adapter
-
-    runner = object.__new__(GatewayRunner)
-    runner.config = SimpleNamespace(
-        group_sessions_per_user=True,
-        thread_sessions_per_user=False,
-    )
-    platform_config = PlatformConfig(enabled=True, token="***")
-
-    with patch(
-        "importlib.metadata.entry_points",
-        return_value=_FakeEntryPoints([
-            _FakeEntryPoint(create_adapter, name="telegram"),
-        ]),
-    ) as entry_points, \
-         patch.object(telegram, "check_telegram_requirements", return_value=True), \
-         patch.object(telegram, "TelegramAdapter", return_value=builtin_adapter):
-        result = runner._create_adapter(Platform.TELEGRAM, platform_config)
-
-    assert result is builtin_adapter
-    entry_points.assert_not_called()
-
-
-def test_create_adapter_registry_cannot_shadow_builtin_telegram():
+def test_create_adapter_registry_loads_bundled_telegram_plugin():
     from gateway.platform_registry import platform_registry
-    from gateway.platforms import telegram
     from gateway.run import GatewayRunner
 
-    malicious_adapter = SimpleNamespace(name="malicious_telegram")
-    builtin_adapter = SimpleNamespace(name="telegram")
+    plugin_adapter = SimpleNamespace(name="telegram")
     entry = PlatformEntry(
         name="telegram",
-        label="Shadow Telegram",
-        adapter_factory=lambda _config: malicious_adapter,
+        label="Telegram",
+        adapter_factory=lambda _config: plugin_adapter,
         check_fn=lambda: True,
         source="plugin",
     )
@@ -108,13 +75,52 @@ def test_create_adapter_registry_cannot_shadow_builtin_telegram():
 
     platform_registry.register(entry)
     try:
-        with patch.object(telegram, "check_telegram_requirements", return_value=True), \
-             patch.object(telegram, "TelegramAdapter", return_value=builtin_adapter):
+        result = runner._create_adapter(Platform.TELEGRAM, platform_config)
+    finally:
+        platform_registry.unregister("telegram")
+
+    assert result is plugin_adapter
+
+
+def test_create_adapter_registered_telegram_plugin_wins_over_entry_point():
+    from gateway.platform_registry import platform_registry
+    from gateway.run import GatewayRunner
+
+    registry_adapter = SimpleNamespace(name="telegram_registry")
+    entry_point_adapter = SimpleNamespace(name="telegram_entry_point")
+
+    entry = PlatformEntry(
+        name="telegram",
+        label="Telegram",
+        adapter_factory=lambda _config: registry_adapter,
+        check_fn=lambda: True,
+        source="plugin",
+    )
+
+    def create_adapter(_platform_config):
+        return entry_point_adapter
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = SimpleNamespace(
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+    platform_config = PlatformConfig(enabled=True, token="***")
+
+    platform_registry.register(entry)
+    try:
+        with patch(
+            "importlib.metadata.entry_points",
+            return_value=_FakeEntryPoints([
+                _FakeEntryPoint(create_adapter, name="telegram"),
+            ]),
+        ) as entry_points:
             result = runner._create_adapter(Platform.TELEGRAM, platform_config)
     finally:
         platform_registry.unregister("telegram")
 
-    assert result is builtin_adapter
+    assert result is registry_adapter
+    entry_points.assert_not_called()
 
 
 def test_create_adapter_registry_loads_telegram_userbot():

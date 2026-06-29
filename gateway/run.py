@@ -7587,10 +7587,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> Optional[BasePlatformAdapter]:
         """Create the appropriate adapter for a platform.
 
-        Core platforms must resolve through the built-in if/elif chain so
-        plugin registry or entry-point adapters cannot shadow bundled
-        adapters. External platforms, including telegram_userbot, may be
-        supplied by the registry or entry points.
+        Checks the platform_registry first (plugin adapters), then falls
+        through to the built-in if/elif chain for core platforms.
         """
         if hasattr(config, "extra") and isinstance(config.extra, dict):
             config.extra.setdefault(
@@ -7602,68 +7600,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 getattr(self.config, "thread_sessions_per_user", False),
             )
 
-        # ── External registry / entry-point platforms ─────────────────────
-        # External adapters include special platforms such as telegram_userbot
-        # and dynamic plugin platforms. They must not shadow core adapters
-        # like telegram/discord/slack.
-        _external_adapter_platforms = {Platform.TELEGRAM_USERBOT}
-        _allow_external_adapter = (
-            platform in _external_adapter_platforms
-            or platform not in _BUILTIN_ADAPTER_PLATFORMS
-        )
-        if _allow_external_adapter:
-            try:
-                from gateway.platform_registry import platform_registry
-                if platform_registry.is_registered(platform.value):
-                    adapter = platform_registry.create_adapter(platform.value, config)
-                    if adapter is not None:
-                        return adapter
-                    # Registered but failed to instantiate — don't silently fall
-                    # through to built-ins (there are none for plugin platforms).
-                    logger.error(
-                        "Platform '%s' is registered but adapter creation failed "
-                        "(check dependencies and config)",
-                        platform.value,
-                    )
-                    return None
-            except Exception as e:
-                logger.debug("Platform registry lookup for '%s' failed: %s", platform.value, e)
-
-        if _allow_external_adapter:
-            try:
-                eps = importlib.metadata.entry_points()
-                if hasattr(eps, "select"):
-                    adapter_eps = list(eps.select(group="hermes_agent.gateway_adapters"))
-                elif isinstance(eps, dict):
-                    adapter_eps = list(eps.get("hermes_agent.gateway_adapters", []))
-                else:
-                    adapter_eps = [
-                        ep for ep in eps
-                        if ep.group == "hermes_agent.gateway_adapters"
-                    ]
-            except Exception as e:
-                logger.debug("Third-party adapter entry-point lookup failed: %s", e)
-                adapter_eps = []
-
-            for ep in adapter_eps:
-                try:
-                    ep_name = ep.name
-                except Exception as e:
-                    logger.debug("Skipping unreadable third-party adapter entry point: %s", e)
-                    continue
-                if ep_name != platform.value:
-                    continue
-                try:
-                    factory = ep.load()
-                    adapter = factory(config)
-                except Exception as e:
-                    logger.warning(
-                        "Failed to create third-party adapter for platform '%s': %s",
-                        platform.value,
-                        e,
-                        exc_info=True,
-                    )
-                    return None
+        # ── Plugin-registered platforms (checked first) ───────────────────
+        try:
+            from gateway.platform_registry import platform_registry
+            if platform_registry.is_registered(platform.value):
+                adapter = platform_registry.create_adapter(platform.value, config)
                 if adapter is not None:
                     # Adapters that need a back-reference to the gateway runner
                     # (e.g. for cross-platform admin alerts) declare a
@@ -7672,11 +7613,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if hasattr(adapter, "gateway_runner"):
                         adapter.gateway_runner = self
                     return adapter
+                # Registered but failed to instantiate — don't silently fall
+                # through to built-ins (there are none for plugin platforms).
                 logger.error(
-                    "Third-party platform adapter '%s' returned None",
+                    "Platform '%s' is registered but adapter creation failed "
+                    "(check dependencies and config)",
                     platform.value,
                 )
                 return None
+        except Exception as e:
+            logger.debug("Platform registry lookup for '%s' failed: %s", platform.value, e)
+
+        # Entry-point adapters (legacy third-party)
+        try:
+            eps = importlib.metadata.entry_points()
+            if hasattr(eps, "select"):
+                adapter_eps = list(eps.select(group="hermes_agent.gateway_adapters"))
+            elif isinstance(eps, dict):
+                adapter_eps = list(eps.get("hermes_agent.gateway_adapters", []))
+            else:
+                adapter_eps = [
+                    ep for ep in eps
+                    if ep.group == "hermes_agent.gateway_adapters"
+                ]
+        except Exception as e:
+            logger.debug("Third-party adapter entry-point lookup failed: %s", e)
+            adapter_eps = []
+
+        for ep in adapter_eps:
+            try:
+                ep_name = ep.name
+            except Exception as e:
+                logger.debug("Skipping unreadable third-party adapter entry point: %s", e)
+                continue
+            if ep_name != platform.value:
+                continue
+            try:
+                factory = ep.load()
+                adapter = factory(config)
+            except Exception as e:
+                logger.warning(
+                    "Failed to create third-party adapter for platform '%s': %s",
+                    platform.value,
+                    e,
+                    exc_info=True,
+                )
+                return None
+            if adapter is not None:
+                if hasattr(adapter, "gateway_runner"):
+                    adapter.gateway_runner = self
+                return adapter
+            logger.error(
+                "Third-party platform adapter '%s' returned None",
+                platform.value,
+            )
+            return None
 
         # Fall through to built-in adapters below
 
