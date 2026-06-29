@@ -1005,8 +1005,13 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
 MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
-        "Save durable facts to persistent memory that survive across sessions. Memory is "
-        "injected into every future turn, so keep entries compact and high-signal.\n\n"
+        "Manage the tiny always-on compact memory injected into every future turn. "
+        "This is NOT the default long-term fact store: use it only for routing rules "
+        "or critical context that must be present in every prompt. Prefer configured "
+        "long-term layers for ordinary durable knowledge (for example Hindsight/semantic "
+        "memory for personal or environment facts, Experience Memory for reusable rules/"
+        "cases/decisions/rejected approaches, skills for procedures, and wiki/notes for "
+        "compiled canon).\n\n"
         "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
         "{action, content?, old_text?}). The batch applies atomically and the char limit is "
         "checked only on the FINAL result — so a single call can remove/replace stale entries "
@@ -1014,17 +1019,18 @@ MEMORY_SCHEMA = {
         "reports current/limit chars and confirms completion; one batch call finishes the "
         "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
         "single lone change.\n\n"
-        "WHEN: save proactively when the user states a preference, correction, or personal "
-        "detail, or you learn a stable fact about their environment, conventions, or workflow. "
-        "Priority: user preferences & corrections > environment facts > procedures. The best "
-        "memory stops the user repeating themselves.\n\n"
+        "WHEN: use compact memory only when the fact/rule must be auto-injected every turn "
+        "or changes memory/tool routing itself. Do NOT save normal preferences, personal "
+        "details, environment facts, workflow lessons, project progress, or procedures here "
+        "when a richer memory layer is available.\n\n"
         "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
         "removes or shortens enough stale entries and adds the new one together.\n\n"
-        "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-        "notes (environment, conventions, tool quirks, lessons).\n\n"
-        "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
-        "completed-work logs, temporary TODO state (use session_search for those). Reusable "
-        "procedures belong in a skill, not memory."
+        "TARGETS: 'user' = tiny always-on user/profile routing hints. 'memory' = tiny always-on "
+        "agent/environment/tool routing hints.\n\n"
+        "SKIP: anything not needed in every prompt, trivial/obvious info, easily re-discovered "
+        "facts, raw data dumps, task progress, completed-work logs, temporary TODO state, "
+        "reusable procedures, and ordinary durable facts that belong in Hindsight, Experience "
+        "Memory, skills, session_search, or the wiki."
     ),
     "parameters": {
         "type": "object",

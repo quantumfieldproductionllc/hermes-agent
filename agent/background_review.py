@@ -157,14 +157,15 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
 # them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) for back-compat;
 # the actual text lives here so future edits are one-place.
 _MEMORY_REVIEW_PROMPT = (
-    "Review the conversation above and consider saving to memory if appropriate.\n\n"
-    "Focus on:\n"
-    "1. Has the user revealed things about themselves — their persona, desires, "
-    "preferences, or personal details worth remembering?\n"
-    "2. Has the user expressed expectations about how you should behave, their work "
-    "style, or ways they want you to operate?\n\n"
-    "If something stands out, save it using the memory tool. "
-    "If nothing is worth saving, just say 'Nothing to save.' and stop."
+    "Review the conversation above and route durable knowledge to the correct memory layer if appropriate.\n\n"
+    "Use compact memory ONLY for routing rules or critical pointers that must be injected into every prompt. "
+    "Do not save ordinary user preferences, personal details, environment facts, workflow lessons, or project facts to compact memory when richer layers are available.\n\n"
+    "Route facts as follows:\n"
+    "1. Personal history, preferences, identity, and environment context → Hindsight/semantic memory tools when available.\n"
+    "2. Reusable lessons, cases, decisions, rejected approaches, and user-model updates → Experience Memory when available.\n"
+    "3. Procedures → skills. Canon/strategy/project state → wiki/notes when configured.\n"
+    "4. Compact memory → only routing config / always-on critical pointers.\n\n"
+    "If nothing is worth saving or no correct layer is available, just say 'Nothing to save.' and stop."
 )
 
 _SKILL_REVIEW_PROMPT = (
@@ -274,10 +275,12 @@ _SKILL_REVIEW_PROMPT = (
 
 _COMBINED_REVIEW_PROMPT = (
     "Review the conversation above and update two things:\n\n"
-    "**Memory**: who the user is. Did the user reveal persona, "
-    "desires, preferences, personal details, or expectations about "
-    "how you should behave? Save facts about the user and durable "
-    "preferences with the memory tool.\n\n"
+    "**Memory routing**: did the user reveal durable knowledge? Route it to the correct layer. "
+    "Use compact memory ONLY for routing rules / always-on critical pointers. "
+    "Personal history, preferences, identity, and environment context belong in Hindsight/semantic memory when available. "
+    "Reusable lessons, cases, decisions, rejected approaches, and user-model updates belong in Experience Memory when available. "
+    "Canon/strategy/project state belongs in the wiki/notes layer when configured. "
+    "Do not dump ordinary facts into the tiny compact memory file.\n\n"
     "**Skills**: how to do this class of task. Be ACTIVE — most "
     "sessions produce at least one skill update. A pass that does "
     "nothing is a missed learning opportunity, not a neutral outcome.\n\n"
@@ -317,10 +320,11 @@ _COMBINED_REVIEW_PROMPT = (
     "(2), or (3).\n\n"
     "User-preference embedding: when the user complains about how "
     "you handled a task, update the skill that governs that task — "
-    "memory alone isn't enough. Memory says 'who the user is and "
-    "what the current situation and state of your operations are'; "
-    "skills say 'how to do this class of task for this user'. Both "
-    "should carry user-preference lessons when relevant.\n\n"
+    "memory alone isn't enough. Route user/context facts to Hindsight, "
+    "reusable decisions/lessons to Experience Memory, and only routing/"
+    "always-on critical pointers to compact memory. Skills say 'how to "
+    "do this class of task for this user' and should carry workflow/style "
+    "lessons when relevant.\n\n"
     "If you notice overlapping existing skills, mention it — the "
     "background curator handles consolidation.\n\n"
     "Protected skills (DO NOT edit these):\n"
