@@ -107,6 +107,29 @@ class InterruptedAgent:
         return {"final_response": "interrupted", "messages": [], "api_calls": 1}
 
 
+class PartialTruncationAgent:
+    """Returns an incomplete turn with no visible assistant text."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+        self._interrupt_requested = False
+
+    @property
+    def is_interrupted(self) -> bool:
+        return self._interrupt_requested
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {
+            "final_response": None,
+            "messages": [],
+            "api_calls": 2,
+            "completed": False,
+            "partial": True,
+            "error": "Response truncated due to output length limit",
+        }
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -199,6 +222,20 @@ async def test_telegram_userbot_never_renders_tool_progress(monkeypatch, tmp_pat
     assert "first search" not in rendered
     assert "web_search" not in rendered
     assert "/verbose" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_partial_empty_agent_response_is_normalized(monkeypatch, tmp_path):
+    """Messaging gateways should not echo raw truncation errors as final text."""
+    adapter, result = await _run_once(
+        monkeypatch, tmp_path, PartialTruncationAgent, "sess-partial-empty"
+    )
+
+    assert result["final_response"].startswith("⚠️ Processing stopped:")
+    assert "Response truncated due to output length limit" in result["final_response"]
+    assert result["final_response"] != "⚠️ Response truncated due to output length limit"
+    assert result["partial"] is True
+    assert adapter.sent == []
 
 
 @pytest.mark.asyncio
