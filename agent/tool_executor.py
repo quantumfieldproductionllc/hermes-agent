@@ -75,6 +75,25 @@ _MAX_TOOL_WORKERS = 8
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 
 
+def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
+    """Parse model-emitted arguments without repairing or coercing them."""
+    try:
+        arguments = json.loads(raw_arguments)
+    except (json.JSONDecodeError, TypeError):
+        arguments = None
+    if isinstance(arguments, dict):
+        return arguments, None
+    return {}, json.dumps(
+        {
+            "error": "Invalid tool arguments",
+            "message": (
+                "Tool arguments must be a valid JSON object; tool was not executed."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _resolve_concurrent_tool_timeout() -> float | None:
     raw = os.getenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "").strip()
     if not raw:
@@ -338,24 +357,36 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     for tool_call in tool_calls:
         function_name = tool_call.function.name
 
-        # Reset nudge counters
-        if function_name == "memory":
-            agent._turns_since_memory = 0
-        elif function_name == "skill_manage":
-            agent._iters_since_skill = 0
-
-        raw_arguments = sanitize_context(getattr(tool_call.function, "arguments", "{}"))
+        raw_arguments = sanitize_context(
+            getattr(tool_call.function, "arguments", "{}")
+        )
         try:
             tool_call.function.arguments = raw_arguments
         except Exception:
             pass
-        try:
-            function_args = json.loads(raw_arguments)
-        except json.JSONDecodeError:
-            function_args = {}
+        function_args, malformed_args_result = _parse_tool_arguments(raw_arguments)
+
+        if malformed_args_result is not None:
+            parsed_calls.append(
+                (
+                    tool_call,
+                    function_name,
+                    function_args,
+                    [],
+                    malformed_args_result,
+                    False,
+                )
+            )
+            continue
         function_args = sanitize_context_payload(function_args)
         if not isinstance(function_args, dict):
             function_args = {}
+
+        # Reset nudge counters only for a structurally valid invocation.
+        if function_name == "memory":
+            agent._turns_since_memory = 0
+        elif function_name == "skill_manage":
+            agent._iters_since_skill = 0
 
         # ── Tool Search unwrap ────────────────────────────────────────
         # When the model invokes the tool_call bridge, peel it open so
@@ -422,8 +453,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             )
         else:
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
+                from hermes_cli.plugins import resolve_pre_tool_block
+                block_message = resolve_pre_tool_block(
                     function_name,
                     function_args,
                     task_id=effective_task_id or "",
@@ -997,16 +1028,31 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         function_name = tool_call.function.name
 
-        raw_arguments = sanitize_context(getattr(tool_call.function, "arguments", "{}"))
+        raw_arguments = sanitize_context(
+            getattr(tool_call.function, "arguments", "{}")
+        )
         try:
             tool_call.function.arguments = raw_arguments
         except Exception:
             pass
-        try:
-            function_args = json.loads(raw_arguments)
-        except json.JSONDecodeError as e:
-            logger.warning(f"Unexpected JSON error after validation: {e}")
-            function_args = {}
+        function_args, malformed_args_result = _parse_tool_arguments(
+            raw_arguments
+        )
+        if malformed_args_result is not None:
+            messages.append(
+                make_tool_result_message(
+                    function_name,
+                    malformed_args_result,
+                    tool_call.id,
+                )
+            )
+            _flush_session_db_after_tool_progress(
+                agent,
+                messages,
+                stage=f"invalid tool arguments {function_name}",
+            )
+            agent._apply_pending_steer_to_tool_results(messages, 1)
+            continue
         function_args = sanitize_context_payload(function_args)
         if not isinstance(function_args, dict):
             function_args = {}
@@ -1047,8 +1093,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _block_error_type = "tool_scope_block"
         else:
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                _block_msg = get_pre_tool_call_block_message(
+                from hermes_cli.plugins import resolve_pre_tool_block
+                _block_msg = resolve_pre_tool_block(
                     function_name,
                     function_args,
                     task_id=effective_task_id or "",

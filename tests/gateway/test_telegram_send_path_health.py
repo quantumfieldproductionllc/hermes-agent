@@ -5,6 +5,7 @@ can enter a wedged state where ``bot.send_message()`` returns a valid Message
 but nothing reaches the recipient.  ``_send_path_degraded`` short-circuits
 ``send()`` so cron's live-adapter branch falls through to standalone HTTP.
 """
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -86,7 +87,13 @@ async def test_reconnect_storm_sets_and_heartbeat_clears_flag(monkeypatch):
     )
     # Suppress the self-rescheduled retry so the test doesn't recurse.
     monkeypatch.setattr(
-        "plugins.platforms.telegram.adapter.asyncio.ensure_future", MagicMock()
+        "plugins.platforms.telegram.adapter.asyncio.ensure_future",
+        MagicMock(
+            side_effect=lambda coro: (
+                coro.close(),
+                asyncio.get_event_loop().create_future(),
+            )[1]
+        ),
     )
 
     with patch("plugins.platforms.telegram.adapter.asyncio.sleep", new_callable=AsyncMock):

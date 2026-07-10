@@ -48,6 +48,11 @@ def _make_runner(config: GatewayConfig | dict | None = None):
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
+    # Gateway auth inspects these adapter capability flags. MagicMock would
+    # otherwise auto-create truthy attributes and incorrectly look like a
+    # trusted upstream-authorized adapter.
+    adapter.authorization_is_upstream = False
+    adapter.enforces_own_access_policy = False
     runner.adapters = {Platform.TELEGRAM_USERBOT: adapter}
     runner.hooks = SimpleNamespace(
         emit=AsyncMock(),
