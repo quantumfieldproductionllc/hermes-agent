@@ -218,6 +218,28 @@ def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
     return allowed is None or platform in allowed
 
 
+def _toolset_allowed_by_restricted_default(ts_key: str, platform: str) -> bool:
+    """Return whether a restricted platform may resolve ``ts_key``.
+
+    Restricted external platforms only expose toolsets whose tools are already
+    present in their platform default toolset. This prevents broad configured
+    toolsets (terminal, messaging, admin, plugins, MCP) from escaping the
+    platform boundary.
+    """
+    if platform not in _RESTRICTED_PLATFORM_DEFAULTS:
+        return True
+    try:
+        from toolsets import resolve_toolset
+
+        plat_info = PLATFORMS.get(platform)
+        default_ts = plat_info["default_toolset"] if plat_info else f"hermes-{platform}"
+        allowed_tools = set(resolve_toolset(default_ts))
+        ts_tools = set(resolve_toolset(ts_key))
+    except Exception:
+        return False
+    return bool(ts_tools) and ts_tools.issubset(allowed_tools)
+
+
 def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
     """Return the platform a platform-less configuration UI should target.
 
