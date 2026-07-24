@@ -38,6 +38,7 @@ from agent.conversation_compression import (
     conversation_history_after_compression,
 )
 from agent.context_engine import automatic_compaction_status_message
+from agent.experience_memory.prompting import extract_text_from_user_content
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.model_metadata import (
@@ -52,12 +53,14 @@ def compose_user_api_content(
     content: Any,
     ext_prefetch_cache: str,
     plugin_user_context: str,
+    eme_prefetch_cache: str = "",
 ) -> Optional[str]:
     """Compose the API-bound content of the current turn's user message.
 
-    Sources: memory-manager prefetch + ``pre_llm_call`` plugin context with
-    target="user_message" (the default). Both are appended to the *API copy*
-    of the user message only — the stored content stays clean.
+    Sources: memory-manager prefetch + Experience Memory Engine scoped
+    recall + ``pre_llm_call`` plugin context with target="user_message"
+    (the default). All are appended to the *API copy* of the user message
+    only — the stored content stays clean.
 
     This is the single source of that composition. The prologue stamps the
     result onto the live message as ``api_content`` (persisted alongside the
@@ -76,6 +79,8 @@ def compose_user_api_content(
         fenced = build_memory_context_block(ext_prefetch_cache)
         if fenced:
             injections.append(fenced)
+    if eme_prefetch_cache:
+        injections.append(eme_prefetch_cache)
     if plugin_user_context:
         injections.append(plugin_user_context)
     if not injections:
@@ -321,6 +326,8 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
+    # Experience-memory prefetch result, reused across loop iterations.
+    eme_prefetch_cache: str = ""
     # Turn-start preflight already proved an immediate retry ineffective.
     preflight_compression_blocked: bool = False
 
@@ -1180,7 +1187,10 @@ def build_turn_context(
     ):
         _turn_user_msg = messages[current_turn_user_idx]
         _api_content = compose_user_api_content(
-            _turn_user_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
+            _turn_user_msg.get("content", ""),
+            ext_prefetch_cache,
+            plugin_user_context,
+            eme_prefetch_cache,
         )
         if _api_content is not None and _api_content != _turn_user_msg.get("content"):
             _turn_user_msg["api_content"] = _api_content
@@ -1253,5 +1263,6 @@ def build_turn_context(
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
+        eme_prefetch_cache=eme_prefetch_cache,
         preflight_compression_blocked=_preflight_compression_blocked,
     )

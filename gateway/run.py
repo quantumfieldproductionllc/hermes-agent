@@ -10771,6 +10771,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._queue_startup_restore_event(event)
             return None
 
+        # Telegram userbot messages originate from a user account context and
+        # may come from external Telegram participants. Slash commands are
+        # gated before generic plugin hooks so non-admin participants cannot
+        # reach global/plugin/quick command dispatch.
+        _checked_userbot_slash_texts: set[str] = set()
+
+        def _telegram_userbot_slash_checkpoint() -> Optional[str]:
+            marker = event.text or ""
+            if marker in _checked_userbot_slash_texts:
+                return None
+            response = self._telegram_userbot_slash_block_response(
+                event,
+                is_internal=is_internal,
+            )
+            if response is None and event.get_command():
+                _checked_userbot_slash_texts.add(marker)
+            return response
+
+        _blocked_userbot_slash = _telegram_userbot_slash_checkpoint()
+        if _blocked_userbot_slash is not None:
+            return _blocked_userbot_slash
+
         # scale-to-zero (Phase 0, 0.B/F13): stamp the gateway-scoped last-inbound
         # clock for real (user-originated) inbound only. Internal/system events
         # (background-process completions, startup-restore replays) are NOT

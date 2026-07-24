@@ -43,6 +43,13 @@ from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.experience_memory.prompting import append_context_to_user_content
 from agent.iteration_budget import IterationBudget
+from agent.memory_manager import (
+    build_memory_context_block,
+    sanitize_context,
+    sanitize_context_payload,
+    sanitize_tool_call_arguments_in_place,
+    sanitized_tool_calls_payload,
+)
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
     build_turn_context,
@@ -1202,14 +1209,33 @@ def run_conversation(
                     # previously-injected copy).
                     api_msg["content"] = _api_content
                 else:
-                    # Callers that bypass the prologue stamping: compose live.
-                    _composed = compose_user_api_content(
-                        api_msg.get("content", ""),
-                        _ext_prefetch_cache,
-                        _plugin_user_context,
-                    )
-                    if _composed is not None:
-                        api_msg["content"] = _composed
+                    # Multimodal user content is normalized downstream. Add
+                    # ephemeral context to its API-only copy before that pass;
+                    # the persisted sidecar remains string-only.
+                    if isinstance(api_msg.get("content"), list):
+                        _injections = []
+                        if _ext_prefetch_cache:
+                            _fenced = build_memory_context_block(_ext_prefetch_cache)
+                            if _fenced:
+                                _injections.append(_fenced)
+                        if _eme_prefetch_cache:
+                            _injections.append(_eme_prefetch_cache)
+                        if _plugin_user_context:
+                            _injections.append(_plugin_user_context)
+                        if _injections:
+                            api_msg["content"] = append_context_to_user_content(
+                                api_msg["content"], "\n\n".join(_injections)
+                            )
+                    else:
+                        # Callers that bypass the prologue stamping: compose live.
+                        _composed = compose_user_api_content(
+                            api_msg.get("content", ""),
+                            _ext_prefetch_cache,
+                            _plugin_user_context,
+                            _eme_prefetch_cache,
+                        )
+                        if _composed is not None:
+                            api_msg["content"] = _composed
             elif (
                 isinstance(_api_content, str)
                 and _api_content

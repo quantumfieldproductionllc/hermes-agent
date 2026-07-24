@@ -26,7 +26,7 @@ import threading
 import time
 from pathlib import Path
 
-from agent.memory_manager import sanitize_context
+from agent.memory_manager import sanitize_context, sanitize_context_payload
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
@@ -5816,7 +5816,7 @@ class SessionDB:
                 tool_calls = json.loads(tool_calls)
             except (json.JSONDecodeError, TypeError):
                 tool_calls = []
-        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        tool_calls_json = json.dumps(sanitize_context_payload(tool_calls)) if tool_calls else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
@@ -5969,7 +5969,7 @@ class SessionDB:
                     tool_calls = json.loads(tool_calls)
                 except (json.JSONDecodeError, TypeError):
                     tool_calls = []
-            tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+            tool_calls_json = json.dumps(sanitize_context_payload(tool_calls)) if tool_calls else None
             # Accept either `platform_message_id` (new explicit name) or
             # `message_id` (yuanbao's existing convention on message dicts).
             platform_msg_id = (

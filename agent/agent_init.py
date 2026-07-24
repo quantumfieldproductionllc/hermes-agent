@@ -1505,6 +1505,7 @@ def init_agent(
     # SQLite session store (optional -- provided by CLI or gateway)
     agent._session_db = session_db
     agent._parent_session_id = parent_session_id
+    agent._session_lineage = tuple(str(item) for item in (session_lineage or ()) if str(item or ""))
     # A close flush and the worker's turn-start flush can overlap. The durable
     # marker is attached to each in-memory message dict, so its test-and-append
     # sequence must be serialized per agent rather than relying on SQLite alone.
@@ -1542,6 +1543,8 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+    agent._experience_memory = None
+    agent._experience_memory_tool_names: set = set()
 
     # Codex commentary visibility (display.show_commentary, default true).
     # When true, completed Codex phase=commentary messages are delivered as
