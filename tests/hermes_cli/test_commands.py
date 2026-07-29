@@ -120,6 +120,16 @@ class TestResolveCommand:
         assert topic.name == "topic"
         assert "topic" in GATEWAY_KNOWN_COMMANDS
 
+    def test_context_command_registered_with_ctx_alias(self):
+        ctx = resolve_command("context")
+        assert ctx is not None
+        assert ctx.name == "context"
+        assert resolve_command("ctx").name == "context"
+        assert "all" in (ctx.subcommands or ())
+        # Available on both CLI and gateway surfaces
+        assert not ctx.cli_only and not ctx.gateway_only
+        assert "context" in GATEWAY_KNOWN_COMMANDS
+
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"
@@ -1278,6 +1288,7 @@ class TestTelegramMenuCommands:
         assert len(names) == 30
         assert hidden > 0
         for name in (
+            "egress",
             "debug",
             "restart",
             "update",
@@ -1491,7 +1502,10 @@ class TestTelegramMenuCommands:
             patch("tools.skills_tool.SKILLS_DIR", fake_skills_dir),
             patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
         ):
-            menu, _hidden = telegram_menu_commands(max_commands=36)
+            # Cap 40: upstream's curated core grew past 36 visible built-ins;
+            # 40 still forces the skills tail to trim while leaving room for
+            # the bundle section that sits between core and skills.
+            menu, _hidden = telegram_menu_commands(max_commands=40)
 
         names = [name for name, _ in menu]
         assert "dojo" in names
