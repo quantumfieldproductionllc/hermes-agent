@@ -125,10 +125,13 @@ _GATEWAY_FILES = ("gateway/run.py", "gateway/slash_commands.py")
 #   - self._session_db._db.<x>: the sync escape, allowed ONLY where the call is
 #     provably off the event loop — construction (__init__, before the loop
 #     serves) and the run_sync closure (executed in a thread-pool executor).
-#     Four such sites today (maybe_auto_archive joined maybe_auto_prune_and_vacuum
-#     in the construction-time maintenance block); a fifth must be justified and
-#     this count bumped.
-_ALLOWED_SYNC_DB_ESCAPES = 4
+#     Six such sites today: the construction-time maintenance pair
+#     (maybe_auto_archive, maybe_auto_prune_and_vacuum), the run_sync session
+#     fetches (_sess_row, telegram topic binding), and the run_sync lineage
+#     prefetch (get_session + _session_lineage_root_to_tip, which feeds
+#     parent-lineage context into fresh agent construction). A seventh must be
+#     justified and this count bumped.
+_ALLOWED_SYNC_DB_ESCAPES = 6
 
 # Sync helpers that touch SessionDB but are NEVER invoked bare on the loop:
 # every loop-side call wraps them in ``asyncio.to_thread(...)`` and the only

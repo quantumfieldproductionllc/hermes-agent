@@ -993,14 +993,16 @@ class TestSanitizeEnvLines:
         result = _sanitize_env_lines(lines)
         assert result == lines
 
-    def test_splits_telegram_userbot_auth_keys(self):
-        """Telegram userbot auth vars are known to the env sanitizer."""
+    def test_concatenated_userbot_auth_keys_remain_unsplit(self):
+        """Concatenated assignments are ambiguous and stay on one line.
+
+        Upstream redesigned _sanitize_env_lines to never synthesize
+        assignments from KEY=-shaped value text; this pins that the userbot
+        auth vars get no special treatment under those semantics.
+        """
         lines = ["TELEGRAM_USERBOT_ALLOWED_USERS=123TELEGRAM_USERBOT_ALLOW_ALL_USERS=true\n"]
         result = _sanitize_env_lines(lines)
-        assert result == [
-            "TELEGRAM_USERBOT_ALLOWED_USERS=123\n",
-            "TELEGRAM_USERBOT_ALLOW_ALL_USERS=true\n",
-        ]
+        assert result == lines
 
     def test_value_with_equals_sign_not_split(self):
         """A value containing '=' shouldn't be falsely split (lowercase in value)."""

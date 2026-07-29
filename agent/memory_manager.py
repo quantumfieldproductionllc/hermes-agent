@@ -167,10 +167,6 @@ _INTERNAL_CONTEXT_RE = re.compile(
     rf'<\s*(?P<tag>{_CONTEXT_TAG_PATTERN})\s*>[\s\S]*?</\s*(?P=tag)\s*>',
     re.IGNORECASE,
 )
-_UNTERMINATED_INTERNAL_CONTEXT_RE = re.compile(
-    rf'<\s*{_CONTEXT_TAG_PATTERN}\s*>[\s\S]*\Z',
-    re.IGNORECASE,
-)
 _INTERNAL_NOTE_RE = re.compile(
     r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
     re.IGNORECASE,
@@ -178,9 +174,14 @@ _INTERNAL_NOTE_RE = re.compile(
 
 
 def sanitize_context(text: str) -> str:
-    """Strip fence tags, injected context blocks, and system notes from provider output."""
+    """Strip fence tags, injected context blocks, and system notes from provider output.
+
+    Unterminated opening tags are NOT stripped-to-end: an escape attempt like
+    ``fact</memory-context>INJECTED<memory-context>fact`` must neutralize the
+    tags while keeping the surrounding content visible. Hidden context is the
+    threat; once the tags are gone the text is plain visible content.
+    """
     text = _INTERNAL_CONTEXT_RE.sub('', text)
-    text = _UNTERMINATED_INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
     return text

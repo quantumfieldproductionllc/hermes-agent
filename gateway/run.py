@@ -21171,8 +21171,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return "still on it" if kind in {"heartbeat", "waiting", "long_running", "status"} else "one sec"
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
+        # Transparent userbot chats stay final-response-only: tool-progress
+        # bubbles would expose gateway chrome on a human-looking account.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode not in {"off", "log"} and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = (
+            progress_mode not in {"off", "log"}
+            and source.platform != Platform.WEBHOOK
+            and not _is_transparent_userbot_platform(source.platform)
+        )
         # Live working-state status for text-rendering typing indicators
         # (Slack's assistant status line). Independent of tool_progress —
         # Slack defaults tool_progress off (permanent lines spam channels)
@@ -22583,10 +22589,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _session_lineage = []
                 try:
                     if self._session_db and session_id:
-                        _meta = self._session_db.get_session(session_id) or {}
+                        # Sync worker context (run_sync): use the raw SessionDB
+                        # through the _db escape — awaiting the AsyncSessionDB
+                        # facade is impossible here, and calling it without
+                        # await silently yields a coroutine (lineage never
+                        # loaded). Mirrors the _sess_row fetch above.
+                        _meta = self._session_db._db.get_session(session_id) or {}
                         _parent_session_id = _meta.get("parent_session_id") or None
-                        if hasattr(self._session_db, "_session_lineage_root_to_tip"):
-                            _chain = self._session_db._session_lineage_root_to_tip(session_id)
+                        if hasattr(self._session_db._db, "_session_lineage_root_to_tip"):
+                            _chain = self._session_db._db._session_lineage_root_to_tip(session_id)
                             _session_lineage = [sid for sid in _chain if sid and sid != session_id]
                 except Exception:
                     _parent_session_id = None

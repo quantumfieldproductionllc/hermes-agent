@@ -297,7 +297,10 @@ _SKILL_REVIEW_PROMPT = (
 
 _COMBINED_REVIEW_PROMPT = (
     "Review the conversation above and update two things:\n\n"
-    "**Memory routing**: did the user reveal durable knowledge? Route it to the correct layer. "
+    "**Memory**: who the user is. Did the user reveal persona, "
+    "desires, preferences, personal details, or expectations about "
+    "how you should behave? Save facts about the user and durable "
+    "preferences with the memory tool — and route durable knowledge to the correct layer. "
     "Use compact memory ONLY for routing rules / always-on critical pointers. "
     "Personal history, preferences, identity, and environment context belong in Hindsight/semantic memory when available. "
     "Reusable lessons, cases, decisions, rejected approaches, and user-model updates belong in Experience Memory when available. "
