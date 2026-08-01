@@ -4150,7 +4150,7 @@ class TurnRunner:
         # Map platform enum to the platform hint key the agent understands.
         # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
         platform_key = "cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value
-        
+
         # Combine platform context, YAML channel_prompts hint for this chat,
         # channel_overrides system_prompt (or global ephemeral), and gateway
         # ephemeral prompt from _get_system_prompt_for_channel.
@@ -4808,7 +4808,7 @@ class TurnRunner:
         ctx.agent_holder[0] = agent
         # Capture the full tool definitions for transcript logging
         ctx.tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
-        
+
         # Convert history to agent format.
         # Two cases:
         #   1. Normal path (from transcript): simple {role, content, timestamp} dicts
@@ -4856,12 +4856,12 @@ class TurnRunner:
                 agent_history = strip_stale_dangerous_confirmations(
                     _selected, now=time.time()
                 )
-        
+
         # Collect MEDIA paths already in history so we can exclude them
         # from the current turn's extraction. This is compression-safe:
         # even if the message list shrinks, we know which paths are old.
         _history_media_paths: set = _collect_history_media_paths(agent_history)
-        
+
         # Register per-session gateway approval callback so dangerous
         # command approval blocks the agent thread (mirrors CLI input()).
         # The callback bridges sync→async to send the approval request
@@ -5180,7 +5180,7 @@ class TurnRunner:
         # finish() is called from the outer event-loop thread after the
         # executor returns, so early returns from run_sync are also
         # finalised.  See the outer finally/completion section below.
-        
+
         # Return final response, or a message if something went wrong
         final_response = result.get("final_response")
 
@@ -16091,7 +16091,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Load conversation history from transcript
         history = await self.async_session_store.load_transcript(session_entry.session_id)
-        
+
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
         #
@@ -16786,7 +16786,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _pb_err,
                 )
                 turn_sidecar_notes.append(_intro_note)
-        
+
         # One-time prompt if no home channel is set for this platform.
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.).
         # Skip real-account userbot platforms: they are meant to look like a human account,
@@ -23464,7 +23464,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile_exists,
         )
         from hermes_constants import get_hermes_home
-        
+
         # Track whether a profile was explicitly requested (vs. falling back to default)
         explicit_profile = None
         try:
@@ -23477,7 +23477,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     explicit_profile = name  # Routing explicitly set this profile
             if not name:
                 name = get_active_profile_name() or "default"
-            
+
             profile_dir = get_profile_dir(name)
             # Warn if an explicit profile doesn't exist on disk
             if explicit_profile and not profile_exists(name):
@@ -23822,7 +23822,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # TurnRunner.progress_callback (bound method, same signature).
         turn_ctx.progress_callback = turn_runner.progress_callback
         turn_ctx.voice_ack_callback = turn_runner.voice_ack_callback
-        
+
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
         #
@@ -23945,7 +23945,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         turn_ctx._progress_metadata = _progress_metadata
         turn_ctx._progress_reply_to = _progress_reply_to
         send_progress_messages = turn_runner.send_progress_messages
-        
+
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance
         turn_ctx.agent_holder = agent_holder
@@ -23961,7 +23961,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         turn_ctx.tools_holder = tools_holder
         turn_ctx.stream_consumer_holder = stream_consumer_holder
         turn_ctx.streaming_tts_consumer_holder = streaming_tts_consumer_holder
-        
+
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
         _hooks_ref = self.hooks
@@ -24052,7 +24052,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # executor call below is unchanged).  Its closed-over locals travel
         # on turn_ctx; `nonlocal message` rebinds became ctx.message writes.
         run_sync = turn_runner.run_sync
-        
+
         # Start progress message sender if enabled. Gate on needs_progress_queue
         # (tool_progress OR thinking_progress), not tool_progress alone: the
         # sender drains BOTH tool-progress lines and _thinking scratch bubbles.
@@ -25615,7 +25615,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # policy. GatewayRunner scopes this bit to cold adapter connects and clears
     # it before the background reconnect watcher starts.
     runner._platform_lock_takeover_on_start = bool(replace)
-    
+
     # Track whether an unexpected signal initiated the shutdown. When an
     # unexpected SIGTERM kills the gateway, we exit non-zero so service
     # managers can revive the process. Planned stop paths write a marker

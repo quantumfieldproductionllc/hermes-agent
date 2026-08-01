@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.telegram import MAX_COMMANDS_PER_SCOPE
 
 
 def _make_test_adapter():
@@ -31,8 +30,13 @@ def _forum_message(chat_id=-100, is_forum=True):
     )
 
 
-def test_telegram_adapter_uses_full_bot_api_command_cap():
-    assert MAX_COMMANDS_PER_SCOPE == 100
+def test_telegram_adapter_menu_cap_comes_from_commands_module():
+    """The per-scope command cap is owned by hermes_cli.commands (curated menu)."""
+    from hermes_cli.commands import telegram_menu_max_commands
+
+    cap = telegram_menu_max_commands()
+    assert isinstance(cap, int)
+    assert 1 <= cap <= 100  # Bot API hard limit per scope
 
 
 @pytest.mark.asyncio
