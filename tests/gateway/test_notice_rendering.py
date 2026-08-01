@@ -40,21 +40,6 @@ class TestRenderNoticeLine:
         assert line == "⚠ Credits 90% used"
         assert "⚠ ⚠" not in line
 
-    def test_text_is_stripped(self):
-        assert render_notice_line(AgentNotice(text="  ⚠ padded  ", level="warn")) == "⚠ padded"
-
-    def test_empty_text_returns_empty_string(self):
-        # Empty/whitespace → "" → the callback suppresses the push. Fail-soft.
-        assert render_notice_line(AgentNotice(text="", level="warn")) == ""
-        assert render_notice_line(AgentNotice(text="   ", level="warn")) == ""
-
-    def test_malformed_notice_does_not_raise(self):
-        # Duck-typed: a stand-in lacking the expected attrs degrades to "".
-        class _Bare:
-            pass
-
-        assert render_notice_line(_Bare()) == ""
-
 
 def test_real_policy_notices_render_without_doubling():
     """End-to-end regression: every notice evaluate_credits_notices emits already
@@ -180,3 +165,24 @@ class TestDeliverNoticeLine:
         runner.adapters = {}
         # Must not raise when the platform has no registered adapter.
         await runner._deliver_platform_notice(source, "• anything")
+
+
+# ---------------------------------------------------------------------------
+# Local feature tests restored after upstream test-suite rewrite (amelia-assistant).
+# ---------------------------------------------------------------------------
+
+class TestLocalRestored:
+    def test_empty_text_returns_empty_string(self):
+        # Empty/whitespace → "" → the callback suppresses the push. Fail-soft.
+        assert render_notice_line(AgentNotice(text="", level="warn")) == ""
+        assert render_notice_line(AgentNotice(text="   ", level="warn")) == ""
+
+    def test_malformed_notice_does_not_raise(self):
+        # Duck-typed: a stand-in lacking the expected attrs degrades to "".
+        class _Bare:
+            pass
+
+        assert render_notice_line(_Bare()) == ""
+
+    def test_text_is_stripped(self):
+        assert render_notice_line(AgentNotice(text="  ⚠ padded  ", level="warn")) == "⚠ padded"

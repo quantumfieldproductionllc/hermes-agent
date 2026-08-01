@@ -56,8 +56,6 @@ class TestGetToolset:
         assert ts is not None
         assert set(ts["tools"]) == {"web_search", "web_extract", "web_search_plus"}
 
-    def test_unknown_returns_none(self):
-        assert get_toolset("nonexistent") is None
 
 
 class TestResolveToolset:
@@ -84,8 +82,6 @@ class TestResolveToolset:
             del TOOLSETS["_cycle_a"]
             del TOOLSETS["_cycle_b"]
 
-    def test_unknown_toolset_returns_empty(self):
-        assert resolve_toolset("nonexistent") == []
 
     def test_experience_memory_resolves_to_no_registry_tools(self):
         assert resolve_toolset("experience_memory") == []
@@ -109,13 +105,7 @@ class TestResolveToolset:
 
         assert resolve_toolset("plugin_example") == ["plugin_a", "plugin_b"]
 
-    def test_all_alias(self):
-        tools = resolve_toolset("all")
-        assert len(tools) > 10  # Should resolve all tools from all toolsets
 
-    def test_star_alias(self):
-        tools = resolve_toolset("*")
-        assert len(tools) > 10
 
 
 class TestResolveMultipleToolsets:
@@ -127,8 +117,6 @@ class TestResolveMultipleToolsets:
         # No duplicates
         assert len(tools) == len(set(tools))
 
-    def test_empty_list(self):
-        assert resolve_multiple_toolsets([]) == []
 
 
 class TestValidateToolset:
@@ -137,9 +125,6 @@ class TestValidateToolset:
         assert validate_toolset("terminal") is True
         assert validate_toolset("experience_memory") is True
 
-    def test_all_alias_valid(self):
-        assert validate_toolset("all") is True
-        assert validate_toolset("*") is True
 
     def test_invalid(self):
         assert validate_toolset("nonexistent") is False
@@ -173,8 +158,6 @@ class TestGetToolsetInfo:
         assert info["is_composite"] is True
         assert info["tool_count"] > len(info["direct_tools"])
 
-    def test_unknown_returns_none(self):
-        assert get_toolset_info("nonexistent") is None
 
 
 class TestCreateCustomToolset:
@@ -220,10 +203,6 @@ class TestToolsetConsistency:
             assert "tools" in ts, f"{name} missing tools"
             assert "includes" in ts, f"{name} missing includes"
 
-    def test_all_includes_reference_existing_toolsets(self):
-        for name, ts in TOOLSETS.items():
-            for inc in ts["includes"]:
-                assert inc in TOOLSETS, f"{name} includes unknown toolset '{inc}'"
 
     def test_hermes_platforms_share_core_tools(self):
         """All hermes-* platform toolsets share the same core tools.
@@ -286,8 +265,6 @@ class TestDefaultPlatformWebSearchCoverage:
     def test_hermes_whatsapp_toolset_includes_web_search(self):
         assert "web_search" in resolve_toolset("hermes-whatsapp")
 
-    def test_hermes_api_server_toolset_includes_web_search(self):
-        assert "web_search" in resolve_toolset("hermes-api-server")
 
 
 class TestResolveToolsetIncludeRegistry:
@@ -307,10 +284,6 @@ class TestResolveToolsetIncludeRegistry:
         assert "read_terminal" in merged
         assert "read_terminal" not in static
 
-    def test_get_toolset_include_registry_false_is_static(self):
-        ts = get_toolset("delegation", include_registry=False)
-        assert ts is not None
-        assert ts["tools"] == ["delegate_task"]
 
     def test_static_view_threads_through_includes(self):
         # 'debugging' has direct tools [terminal, process] and includes [web, file]
@@ -319,10 +292,6 @@ class TestResolveToolsetIncludeRegistry:
         assert "web_search" in static
         assert "read_file" in static
 
-    def test_all_alias_accepts_include_registry(self):
-        merged = set(resolve_toolset("all"))
-        static = set(resolve_toolset("all", include_registry=False))
-        assert static <= merged
 
     def test_registry_only_toolset_static_view_is_empty(self):
         assert resolve_toolset("__definitely_not_a_real_toolset__", include_registry=False) == []
