@@ -996,6 +996,43 @@ class TestTruncateMessage:
         for word in ("Lead", "important", "detail", "trailing"):
             assert word in joined, f"lost content: {word}"
 
+    def test_final_chunk_balanced_when_source_unclosed(self):
+        """If the source itself never closes an emphasis marker, the final
+        chunk must get the missing closer appended — otherwise the last
+        chunk is exactly the one strict parsers reject."""
+        from gateway.platforms.base import _inline_md_unclosed
+        import re
+
+        adapter = self._adapter()
+        # Bold opened, code fence in the middle, source never closes the bold.
+        msg = "**" + "bold words " * 30 + "\n```\ncode here\n```\n" + "tail " * 20
+        chunks = adapter.truncate_message(msg, max_length=200)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            body = re.sub(r"\s*\(\d+/\d+\)$", "", chunk)
+            stack, in_span = _inline_md_unclosed(body)
+            assert not stack, f"final chunk unbalanced: {body!r}"
+            assert not in_span, f"final chunk has open code span: {body!r}"
+
+    def test_single_chunk_unbalanced_source_gets_closer(self):
+        """The fast path (message fits in one chunk) must also close markers
+        the source left open — Telegram rejects those too."""
+        adapter = self._adapter()
+        chunks = adapter.truncate_message("**bold without close", max_length=4096)
+        assert chunks == ["**bold without close**"]
+
+    def test_single_chunk_balanced_source_untouched(self):
+        """Balanced or marker-free single-chunk content passes through
+        byte-identical."""
+        adapter = self._adapter()
+        for msg in (
+            "**ok** text",
+            "plain text no markers",
+            "snake_case_var and another_one",
+            "math: 2 * 3 = 6",
+        ):
+            assert adapter.truncate_message(msg, max_length=4096) == [msg], msg
+
 
 # ---------------------------------------------------------------------------
 # _get_human_delay

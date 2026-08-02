@@ -293,10 +293,22 @@ def _inline_md_unclosed(
             i += 1
             continue
         if text.startswith("**", i):
+            prev = text[i - 1] if i > 0 else ""
+            nxt = text[i + 2] if i + 2 < n else ""
+            if prev in (" ", "\t") and nxt in (" ", "\t"):
+                # Free-floating marker (e.g. "2 ** 3") — literal, not emphasis
+                i += 2
+                continue
             _inline_md_toggle(open_stack, "**")
             i += 2
             continue
         if ch == "*":
+            prev = text[i - 1] if i > 0 else ""
+            nxt = text[i + 1] if i + 1 < n else ""
+            if prev in (" ", "\t") and nxt in (" ", "\t"):
+                # Free-floating asterisk (e.g. "2 * 3 = 6") — literal
+                i += 1
+                continue
             _inline_md_toggle(open_stack, "*")
             i += 1
             continue
@@ -309,6 +321,11 @@ def _inline_md_unclosed(
             i += 2
             continue
         if ch == "~":
+            prev = text[i - 1] if i > 0 else ""
+            nxt = text[i + 1] if i + 1 < n else ""
+            if prev in (" ", "\t") and nxt in (" ", "\t"):
+                i += 1
+                continue
             _inline_md_toggle(open_stack, "~")
             i += 1
             continue
@@ -317,6 +334,9 @@ def _inline_md_unclosed(
             nxt = text[i + 1] if i + 1 < n else ""
             if prev.isalnum() and nxt.isalnum():
                 # snake_case identifier — literal underscore, not emphasis
+                i += 1
+                continue
+            if prev in (" ", "\t") and nxt in (" ", "\t"):
                 i += 1
                 continue
             _inline_md_toggle(open_stack, "_")
@@ -6848,6 +6868,16 @@ class BasePlatformAdapter(ABC):
         """
         _len = len_fn or len
         if _len(content) <= max_length:
+            # Single-chunk fast path.  Still balance inline markdown the
+            # source itself left open (e.g. a trailing "**bold" with no
+            # closer): strict parsers like Telegram MarkdownV2 reject the
+            # whole message on any unbalanced entity, and appending the
+            # missing closers is strictly better than plain-text fallback.
+            _stack, _span = _inline_md_unclosed(content)
+            if _span:
+                content += "`"
+            if _stack:
+                content += "".join(reversed(_stack))
             return [content]
 
         INDICATOR_RESERVE = 10   # room for " (XX/XX)"
@@ -6915,6 +6945,19 @@ class BasePlatformAdapter(ABC):
                                 _final_lang = _tag.split()[0] if _tag else ""
                     if _final_in_code:
                         final_chunk += FENCE_CLOSE
+                if not _final_in_code:
+                    # Balance inline markdown on the final chunk too.  This
+                    # covers both markers carried from a mid-message split
+                    # whose closer never arrives, and source text the model
+                    # itself left unbalanced (e.g. a trailing "**bold" with
+                    # no closing marker) — without this, the last chunk is
+                    # the one piece strict parsers (Telegram MarkdownV2)
+                    # still reject as plain text.
+                    _fstack, _fspan = _inline_md_unclosed(final_chunk)
+                    if _fspan:
+                        final_chunk += "`"
+                    if _fstack:
+                        final_chunk += "".join(reversed(_fstack))
                 chunks.append(final_chunk)
                 break
 
