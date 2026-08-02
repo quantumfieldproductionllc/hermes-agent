@@ -255,6 +255,12 @@ class GatewayStreamConsumer:
         # the stream task through a longer flood cooldown before retrying.
         self._max_fallback_flood_retry_seconds = 5.0
         self._flood_strikes = 0         # Consecutive flood-control edit failures
+        # Server-requested retry_after from the most recent flood-control
+        # failure; feeds the delayed finalize-retry delay.
+        self._last_flood_retry_after = 0.0
+        # One-shot guard for the delayed finalize-format retry scheduled
+        # after a flood-defeated turn-final edit.
+        self._finalize_retry_scheduled = False
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
         # Set when the final response content was sent to the user via
@@ -1317,6 +1323,12 @@ class GatewayStreamConsumer:
                             self._last_sent_text = clean_text
                     except Exception:
                         pass
+                # The visible preview already carries the full final text,
+                # but on REQUIRES_EDIT_FINALIZE platforms (Telegram) it is
+                # RAW markdown — the finalize edit that applies formatting
+                # was defeated by flood control.  Heal it with a delayed
+                # finalize retry instead of leaving raw markup on screen.
+                self._schedule_finalize_format_retry(final_text)
                 self._already_sent = True
                 self._final_response_sent = True
                 self._final_content_delivered = True
@@ -1528,6 +1540,54 @@ class GatewayStreamConsumer:
         err = getattr(result, "error", "") or ""
         err_lower = err.lower()
         return "flood" in err_lower or "retry after" in err_lower or "rate" in err_lower
+
+    def _schedule_finalize_format_retry(self, final_text: str):
+        """Schedule a one-shot delayed finalize edit after flood control.
+
+        On ``REQUIRES_EDIT_FINALIZE`` platforms (Telegram), streaming frames
+        go out as raw text and only the ``finalize=True`` edit applies
+        MarkdownV2/rich formatting.  When that edit is defeated by flood
+        control while the full text is already visible, the content is
+        legitimately marked delivered (no duplicate send) — but the message
+        would stay raw markdown forever.  Re-attempt the finalize edit once
+        after the server-requested ``retry_after`` delay so the formatting
+        heals itself.  Best-effort: on failure the raw preview remains,
+        exactly as before.  Returns the created task (or None) so tests can
+        await it.
+        """
+        if self._finalize_retry_scheduled:
+            return None
+        if getattr(self.adapter, "REQUIRES_EDIT_FINALIZE", False) is not True:
+            return None
+        message_id = self._message_id
+        if not message_id or message_id == "__no_edit__":
+            return None
+        if not final_text or not final_text.strip():
+            return None
+        self._finalize_retry_scheduled = True
+        delay = self._last_flood_retry_after + 2.0
+        if delay <= 2.0:
+            delay = 30.0
+        delay = min(delay, 900.0)
+
+        async def _retry() -> None:
+            try:
+                await asyncio.sleep(delay)
+                await self._edit_message(
+                    message_id=message_id,
+                    content=final_text,
+                    finalize=True,
+                )
+            except Exception:
+                logger.debug(
+                    "Delayed finalize-format retry failed (chat=%s)",
+                    self.chat_id, exc_info=True,
+                )
+
+        try:
+            return asyncio.get_running_loop().create_task(_retry())
+        except RuntimeError:
+            return None
 
     def _resolve_draft_streaming(self) -> bool:
         """Decide whether this run should use native draft streaming.
@@ -2109,6 +2169,17 @@ class GatewayStreamConsumer:
                             # when Telegram/Discord rate-limit this cosmetic
                             # final edit (#36965, #25349).
                             self._final_content_delivered = True
+                            # On REQUIRES_EDIT_FINALIZE platforms (Telegram)
+                            # the failed finalize edit is NOT cosmetic: the
+                            # visible frame is raw markdown and only the
+                            # finalize edit applies formatting.  Schedule a
+                            # delayed retry so the message heals once the
+                            # flood penalty expires.
+                            if self._is_flood_error(result):
+                                _ra = getattr(result, "retry_after", None)
+                                if _ra:
+                                    self._last_flood_retry_after = float(_ra)
+                                self._schedule_finalize_format_retry(text)
                         raw_response = getattr(result, "raw_response", None)
                         if isinstance(raw_response, dict) and raw_response.get("partial_overflow"):
                             # Telegram edited/sent one or more overflow chunks,
@@ -2144,6 +2215,9 @@ class GatewayStreamConsumer:
                         # edits after _MAX_FLOOD_STRIKES consecutive failures.
                         if self._is_flood_error(result):
                             self._flood_strikes += 1
+                            _ra = getattr(result, "retry_after", None)
+                            if _ra:
+                                self._last_flood_retry_after = float(_ra)
                             self._current_edit_interval = min(
                                 self._current_edit_interval * 2, 10.0,
                             )

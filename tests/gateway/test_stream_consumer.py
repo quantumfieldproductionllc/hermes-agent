@@ -1488,3 +1488,156 @@ class TestFlushPendingSync:
         consumer.finish()
         await task
 
+
+
+# ── Delayed finalize-format retry (flood-defeated finalize edit) ──────────
+
+
+class TestFinalizeFormatRetry:
+    """On REQUIRES_EDIT_FINALIZE platforms (Telegram), the finalize=True edit
+    is what converts the raw streaming preview into formatted output.  When
+    flood control defeats that edit while the full text is already visible,
+    the consumer marks content delivered (no duplicate send) — but must also
+    schedule a delayed retry so the raw preview does not stay unformatted
+    forever."""
+
+    @pytest.mark.asyncio
+    async def test_retry_edits_with_finalize_after_delay(self, monkeypatch):
+        sleeps = []
+
+        async def fake_sleep(d):
+            sleeps.append(d)
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig())
+        consumer._message_id = "msg_1"
+        consumer._last_flood_retry_after = 268.0
+
+        task = consumer._schedule_finalize_format_retry("final **bold** text")
+        assert task is not None
+        await task
+
+        adapter.edit_message.assert_called_once()
+        kw = adapter.edit_message.call_args[1]
+        assert kw["message_id"] == "msg_1"
+        assert kw["content"] == "final **bold** text"
+        assert kw["finalize"] is True
+        # Server asked for 268s → retry scheduled just past it.
+        assert sleeps == [270.0]
+
+    @pytest.mark.asyncio
+    async def test_retry_default_delay_without_retry_after(self, monkeypatch):
+        sleeps = []
+
+        async def fake_sleep(d):
+            sleeps.append(d)
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig())
+        consumer._message_id = "msg_1"
+
+        task = consumer._schedule_finalize_format_retry("final text")
+        assert task is not None
+        await task
+        assert sleeps == [30.0]
+
+    @pytest.mark.asyncio
+    async def test_retry_skipped_without_finalize_requirement(self):
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig())
+        consumer._message_id = "msg_1"
+        assert consumer._schedule_finalize_format_retry("text") is None
+        assert consumer._finalize_retry_scheduled is False
+
+    @pytest.mark.asyncio
+    async def test_retry_is_one_shot(self, monkeypatch):
+        async def fake_sleep(d):
+            pass
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig())
+        consumer._message_id = "msg_1"
+        first = consumer._schedule_finalize_format_retry("text")
+        second = consumer._schedule_finalize_format_retry("text")
+        assert first is not None
+        assert second is None
+        await first
+
+    @pytest.mark.asyncio
+    async def test_flood_defeated_finalize_schedules_healing_edit(self, monkeypatch):
+        """End-to-end: the turn-final finalize edit dies to flood control
+        while the full raw text is visible → content is marked delivered
+        AND a delayed finalize retry lands the formatting edit."""
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(d):
+            await real_sleep(0.001)
+
+        monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        edit_calls = []
+
+        async def edit_side_effect(**kw):
+            edit_calls.append(kw)
+            if len(edit_calls) <= 2:
+                return SimpleNamespace(
+                    success=False, error="flood_control:0.1", retry_after=0.1,
+                )
+            return SimpleNamespace(success=True)
+
+        adapter.edit_message = AsyncMock(side_effect=edit_side_effect)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+        consumer.on_delta("Hello **world**")
+        task = asyncio.create_task(consumer.run())
+        # Let the mid-stream frame land (raw text + cursor, as on Telegram).
+        await real_sleep(0.05)
+        consumer.finish()
+        await task
+
+        # Content was visible in full, so delivery is confirmed without a
+        # duplicate gateway send...
+        assert consumer._final_content_delivered is True
+        # ...and the healing retry was scheduled.
+        assert consumer._finalize_retry_scheduled is True
+
+        # Let the delayed retry fire.
+        for _ in range(50):
+            await real_sleep(0.01)
+            if len(edit_calls) >= 3:
+                break
+        assert len(edit_calls) >= 3, (
+            f"delayed finalize retry never fired: {edit_calls}"
+        )
+        healing = edit_calls[2]
+        assert healing["finalize"] is True
+        assert healing["content"] == "Hello **world**"
+        assert healing["message_id"] == "msg_1"
