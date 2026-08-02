@@ -892,6 +892,110 @@ class TestTruncateMessage:
                 "No continuation chunk reopened with language tag"
             )
 
+    def test_bold_balanced_across_chunks(self):
+        """A split inside a **bold** span must close/reopen the markers.
+
+        Telegram MarkdownV2 rejects a message with any unbalanced entity,
+        degrading the whole chunk to plain text.  Every emitted chunk must
+        be individually balanced.
+        """
+        from gateway.platforms.base import _inline_md_unclosed
+
+        adapter = self._adapter()
+        # No newlines: forces the split to land mid-span.
+        msg = "**" + "word " * 200 + "**"
+        chunks = adapter.truncate_message(msg, max_length=200)
+        assert len(chunks) > 1
+        import re
+
+        for chunk in chunks:
+            body = re.sub(r"\s*\(\d+/\d+\)$", "", chunk)
+            stack, in_span = _inline_md_unclosed(body)
+            assert not stack, f"unbalanced emphasis in chunk: {body!r}"
+            assert not in_span, f"unclosed code span in chunk: {body!r}"
+        # Continuation chunks reopen the bold marker.
+        assert any(chunk.lstrip().startswith("**") for chunk in chunks[1:])
+
+    def test_italic_underscore_balanced_across_chunks(self):
+        from gateway.platforms.base import _inline_md_unclosed
+        import re
+
+        adapter = self._adapter()
+        msg = "_" + "italic text goes on and on " * 30 + "_"
+        chunks = adapter.truncate_message(msg, max_length=150)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            body = re.sub(r"\s*\(\d+/\d+\)$", "", chunk)
+            stack, _ = _inline_md_unclosed(body)
+            assert not stack, f"unbalanced italic in chunk: {body!r}"
+
+    def test_spoiler_balanced_across_chunks(self):
+        from gateway.platforms.base import _inline_md_unclosed
+        import re
+
+        adapter = self._adapter()
+        msg = "||" + "secret content keeps going " * 20 + "||"
+        chunks = adapter.truncate_message(msg, max_length=150)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            body = re.sub(r"\s*\(\d+/\d+\)$", "", chunk)
+            stack, _ = _inline_md_unclosed(body)
+            assert not stack, f"unbalanced spoiler in chunk: {body!r}"
+
+    def test_snake_case_not_treated_as_italic(self):
+        """snake_case identifiers contain literal underscores; the balancer
+        must not inject italic markers around them."""
+        adapter = self._adapter()
+        msg = "use some_long_variable_name and another_long_variable here. " * 10
+        chunks = adapter.truncate_message(msg, max_length=150)
+        assert len(chunks) > 1
+        # No chunk may start or end with a balancer-added underscore.
+        for chunk in chunks:
+            body = chunk
+            assert not body.lstrip().startswith("_"), f"injected opener: {body!r}"
+
+    def test_split_avoids_link_boundary(self):
+        """A split must not land inside [text](url) — both halves break."""
+        adapter = self._adapter()
+        pre = "Lead-in prose padding the message body. " * 6
+        link = "[descriptive link text that is fairly long](https://example.com/some/really/long/url/path)"
+        post = " trailing prose continues here." * 8
+        chunks = adapter.truncate_message(pre + link + post, max_length=200)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            # No chunk may contain a dangling '[' without its ']'.
+            assert chunk.count("[") == chunk.count("]"), (
+                f"link broken across boundary: {chunk!r}"
+            )
+
+    def test_inline_code_span_closed_at_boundary(self):
+        """A split inside `code` must close the backtick on the head chunk
+        and reopen it on the continuation."""
+        from gateway.platforms.base import _inline_md_unclosed
+        import re
+
+        adapter = self._adapter()
+        msg = "intro `" + "x" * 300 + "` outro"
+        chunks = adapter.truncate_message(msg, max_length=120)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            body = re.sub(r"\s*\(\d+/\d+\)$", "", chunk)
+            _, in_span = _inline_md_unclosed(body)
+            assert not in_span, f"unclosed inline code in chunk: {body!r}"
+
+    def test_bold_content_preserved_across_chunks(self):
+        """Balancing adds markers but must never drop source content."""
+        import re
+
+        adapter = self._adapter()
+        msg = "Lead sentence here. **" + "important detail " * 40 + "** trailing."
+        chunks = adapter.truncate_message(msg, max_length=200)
+        joined = " ".join(
+            re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks
+        ).replace("*", "")
+        for word in ("Lead", "important", "detail", "trailing"):
+            assert word in joined, f"lost content: {word}"
+
 
 # ---------------------------------------------------------------------------
 # _get_human_delay

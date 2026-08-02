@@ -240,6 +240,149 @@ def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
     return lo
 
 
+def _inline_md_toggle(stack: list, marker: str) -> None:
+    """Toggle *marker* on a nesting stack: pop if it closes the top, else push."""
+    if stack and stack[-1] == marker:
+        stack.pop()
+    else:
+        stack.append(marker)
+
+
+def _inline_md_unclosed(
+    text: str,
+    stack: list = None,
+    in_fence: bool = False,
+    in_code: bool = False,
+):
+    """Track inline markdown state at end of *text*.
+
+    Returns ``(open_stack, in_code_span)`` where *open_stack* is the stack of
+    unclosed emphasis markers (``**``/``*`` bold, ``_`` italic, ``~~``/``~``
+    strikethrough, ``||`` spoiler) in opening order — so the markers needed
+    to close the open spans are ``reversed(open_stack)`` and the markers to
+    reopen them on a following chunk are ``open_stack`` itself — and
+    *in_code_span* is True when the text ends inside an inline `code` span.
+
+    Markers inside fenced code blocks and inline code spans are ignored
+    (they are literal text there), as are backslash-escaped characters
+    (Telegram MarkdownV2 escapes literal specials as ``\\*`` etc.).
+    Underscores with word characters on both sides (``snake_case``) are
+    treated as literal, matching Telegram's own ``(?<!\\w)_..._(?!\\w)``
+    convention.  A lone ``~`` in prose may false-positive as strikethrough;
+    the resulting cosmetic ``~`` pair is far cheaper than the alternative —
+    an unbalanced chunk that the platform rejects wholesale as plain text.
+    """
+    open_stack: list = list(stack) if stack else []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "`":
+            if text.startswith("```", i):
+                in_fence = not in_fence
+                i += 3
+            else:
+                if not in_fence:
+                    in_code = not in_code
+                i += 1
+            continue
+        if in_fence or in_code:
+            i += 1
+            continue
+        if text.startswith("**", i):
+            _inline_md_toggle(open_stack, "**")
+            i += 2
+            continue
+        if ch == "*":
+            _inline_md_toggle(open_stack, "*")
+            i += 1
+            continue
+        if text.startswith("||", i):
+            _inline_md_toggle(open_stack, "||")
+            i += 2
+            continue
+        if text.startswith("~~", i):
+            _inline_md_toggle(open_stack, "~~")
+            i += 2
+            continue
+        if ch == "~":
+            _inline_md_toggle(open_stack, "~")
+            i += 1
+            continue
+        if ch == "_":
+            prev = text[i - 1] if i > 0 else ""
+            nxt = text[i + 1] if i + 1 < n else ""
+            if prev.isalnum() and nxt.isalnum():
+                # snake_case identifier — literal underscore, not emphasis
+                i += 1
+                continue
+            _inline_md_toggle(open_stack, "_")
+            i += 1
+            continue
+        i += 1
+    return open_stack, in_code
+
+
+def _unclosed_link_start(text: str, in_fence: bool = False):
+    """Return the index of the ``[`` opening an unterminated ``[text](url)`` link or None.
+
+    ``None`` when *text* ends outside any link construct.  A chunk boundary
+    inside a link breaks it on both sides, so callers should move the split
+    to before this index.  Brackets inside code are ignored.
+    """
+    in_code = False
+    depth = 0
+    link_open = None
+    in_url = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "`":
+            if text.startswith("```", i):
+                in_fence = not in_fence
+                i += 3
+            else:
+                if not in_fence:
+                    in_code = not in_code
+                i += 1
+            continue
+        if in_fence or in_code:
+            i += 1
+            continue
+        if in_url:
+            if ch == ")":
+                in_url = False
+                link_open = None
+            i += 1
+            continue
+        if ch == "[":
+            if depth == 0:
+                link_open = i
+            depth += 1
+            i += 1
+            continue
+        if ch == "]":
+            if depth > 0:
+                depth -= 1
+            if depth == 0:
+                if i + 1 < n and text[i + 1] == "(":
+                    in_url = True
+                    i += 2
+                    continue
+                link_open = None
+            i += 1
+            continue
+        i += 1
+    return link_open
+
+
 def is_network_accessible(host: str) -> bool:
     """Return True if *host* would expose the server beyond loopback.
 
@@ -6709,21 +6852,42 @@ class BasePlatformAdapter(ABC):
 
         INDICATOR_RESERVE = 10   # room for " (XX/XX)"
         FENCE_CLOSE = "\n```"
+        # Room for inline-markdown closers appended at a chunk boundary
+        # (``**``, ``_``, ``||``, backtick — a handful of 1-2 char markers).
+        INLINE_RESERVE = 8
 
         chunks: List[str] = []
         remaining = content
         # When the previous chunk ended mid-code-block, this holds the
         # language tag (possibly "") so we can reopen the fence.
         carry_lang: Optional[str] = None
+        # Inline markdown state carried across the chunk boundary: emphasis
+        # markers left open by the previous chunk (in opening order) and
+        # whether it ended inside an inline `code` span.  Both are closed at
+        # the end of one chunk and reopened at the start of the next so every
+        # chunk parses standalone on strict parsers (Telegram MarkdownV2
+        # rejects a message with any unbalanced entity and the platform falls
+        # back to plain text, destroying all formatting in that chunk).
+        carry_inline: list = []
+        carry_code_span = False
 
         while remaining:
             # If we're continuing a code block from the previous chunk,
             # prepend a new opening fence with the same language tag.
             prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
+            # Reopen inline spans carried over from the previous chunk.
+            if carry_inline:
+                prefix += "".join(carry_inline)
+            if carry_code_span:
+                prefix += "`"
 
             # How much body text we can fit after accounting for the prefix,
-            # a potential closing fence, and the chunk indicator.
-            headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
+            # a potential closing fence, inline closers, and the chunk
+            # indicator.
+            headroom = (
+                max_length - INDICATOR_RESERVE - INLINE_RESERVE
+                - _len(prefix) - _len(FENCE_CLOSE)
+            )
             if headroom < 1:
                 # Floor at 1 so a pathologically small max_length (0 or 1 —
                 # e.g. a relay capability descriptor whose max_message_length
@@ -6811,6 +6975,20 @@ class BasePlatformAdapter(ABC):
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
 
+            # Avoid splitting inside a markdown link [text](url).  A boundary
+            # inside the link breaks the construct on both chunks: the head
+            # keeps an unclosed `[` / `](` and the tail starts mid-URL — both
+            # are rejected by strict parsers (Telegram MarkdownV2), degrading
+            # the chunks to plain text.  Split before the link instead.
+            candidate = remaining[:split_at]
+            link_start = _unclosed_link_start(candidate)
+            if link_start is not None and link_start > 0:
+                safe_split = candidate.rfind(" ", 0, link_start)
+                nl_split = candidate.rfind("\n", 0, link_start)
+                safe_split = max(safe_split, nl_split)
+                if safe_split > _cp_limit // 4:
+                    split_at = safe_split
+
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()
 
@@ -6835,8 +7013,35 @@ class BasePlatformAdapter(ABC):
                 # Close the orphaned fence so the chunk is valid on its own
                 full_chunk += FENCE_CLOSE
                 carry_lang = lang
+                carry_inline = []
+                carry_code_span = False
             else:
                 carry_lang = None
+                # Balance inline markdown across the boundary: close any
+                # emphasis markers still open at the end of this chunk and
+                # reopen them on the next one, so every chunk parses
+                # standalone on strict parsers (Telegram MarkdownV2 rejects
+                # the whole message on any unbalanced entity).  full_chunk is
+                # scanned as a self-contained document: any carried reopen
+                # markers are already in the prefix, so a fresh scan yields
+                # exactly the state left open at the end of this chunk.
+                open_stack, in_span = _inline_md_unclosed(full_chunk)
+                if in_span:
+                    # Ended inside an inline `code` span.  Close the backtick
+                    # FIRST, then any emphasis that was open before the span
+                    # started — proper nesting order (the next chunk reopens
+                    # emphasis-then-backtick, mirroring the original order).
+                    full_chunk += "`" + "".join(reversed(open_stack))
+                    carry_code_span = True
+                    carry_inline = list(open_stack)
+                else:
+                    carry_code_span = False
+                    if open_stack:
+                        # Close emphasis in reverse nesting order.
+                        full_chunk += "".join(reversed(open_stack))
+                        carry_inline = list(open_stack)
+                    else:
+                        carry_inline = []
 
             chunks.append(full_chunk)
 
