@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hermes_constants import display_hermes_home, get_hermes_home
-from hermes_state import apply_wal_with_fallback
+
+# NOTE: `apply_wal_with_fallback` (hermes_state) is imported lazily inside
+# open() — a top-level import closes a circular chain:
+# context_compressor -> turn_context -> experience_memory -> hermes_state
+# -> hermes_state_common -> context_compressor (upstream added the last edge).
 
 from agent.experience_memory.migrations import apply_migrations, current_schema_version
 from agent.experience_memory.models import (
@@ -67,6 +71,8 @@ class ExperienceStore:
     def open(self) -> None:
         if self._conn is not None:
             return
+        from hermes_state import apply_wal_with_fallback  # lazy: breaks circular import (see module header)
+
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
