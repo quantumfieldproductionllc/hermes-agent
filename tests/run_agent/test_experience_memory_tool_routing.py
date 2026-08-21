@@ -1,4 +1,5 @@
 import json
+import threading
 from types import SimpleNamespace
 
 import model_tools
@@ -36,6 +37,9 @@ def _agent():
         _experience_memory_tool_names={"experience_memory"},
         session_id="session-1",
         _interrupt_requested=False,
+        _tool_worker_threads=set(),
+        _tool_worker_threads_lock=threading.Lock(),
+        _vprint=lambda *a, **k: None,
         _tool_guardrails=_Guardrails(),
         quiet_mode=True,
         verbose_logging=False,
@@ -59,7 +63,7 @@ def _agent():
         _tool_result_content_for_active_model=lambda name, result: result,
         _apply_pending_steer_to_tool_results=lambda messages, count: None,
         _record_file_mutation_result=lambda *a, **k: None,
-        _append_guardrail_observation=lambda name, args, result, failed=False: result,
+        _append_guardrail_observation=lambda name, args, result, failed=False, **k: result,
     )
 
 
